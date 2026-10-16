@@ -2,6 +2,7 @@ package com.botna.automation;
 
 import android.app.Activity;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -14,7 +15,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.inputmethod.InputMethodManager;
-import android.content.Context;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -28,11 +28,11 @@ public class MainActivity extends Activity {
     private static final String KEY_TARGET_TEXT = "target_text";
     private static final String KEY_LAST_RESULT = "last_result";
 
-    private static final int BG = Color.rgb(7, 17, 31);
-    private static final int CARD = Color.rgb(14, 31, 51);
+    private static final int BG = Color.rgb(5, 7, 12);
+    private static final int CARD = Color.argb(238, 13, 17, 26);
     private static final int TEXT = Color.rgb(235, 246, 255);
     private static final int MUTED = Color.rgb(150, 174, 195);
-    private static final int CYAN = Color.rgb(24, 215, 232);
+    private static final int CYAN = Color.rgb(35, 226, 244);
 
     private TextView serviceStatus;
     private TextView lastResult;
@@ -67,18 +67,27 @@ public class MainActivity extends Activity {
 
         scroll.addView(page);
 
-        TextView title = text("بوتنا  Botna", 29, TEXT, true);
+        TextView title = text(
+                "بوتنا  Botna",
+                29,
+                TEXT,
+                true
+        );
+
         page.addView(title, matchWrap());
 
         TextView subtitle = text(
-                "مساعد أتمتة مباشر لهاتفك", 15, MUTED, false
+                "مساعد أتمتة مباشر لهاتفك",
+                15,
+                MUTED,
+                false
         );
 
         LinearLayout.LayoutParams subLp = matchWrap();
         subLp.topMargin = dp(4);
         page.addView(subtitle, subLp);
 
-        // بطاقة حالة خدمة الأتمتة
+        // حالة الخدمة
         LinearLayout statusCard = card();
 
         LinearLayout.LayoutParams cardLp = matchWrap();
@@ -86,12 +95,19 @@ public class MainActivity extends Activity {
         page.addView(statusCard, cardLp);
 
         TextView statusTitle = text(
-                "حالة خدمة الأتمتة", 18, TEXT, true
+                "حالة خدمة الأتمتة",
+                18,
+                TEXT,
+                true
         );
+
         statusCard.addView(statusTitle);
 
         serviceStatus = text(
-                "جارٍ فحص الحالة...", 14, MUTED, false
+                "جارٍ فحص الحالة...",
+                14,
+                MUTED,
+                false
         );
 
         LinearLayout.LayoutParams statusTextLp = matchWrap();
@@ -109,18 +125,20 @@ public class MainActivity extends Activity {
         settingsButton.setOnClickListener(v -> {
             try {
                 startActivity(
-                    new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        new Intent(
+                                Settings.ACTION_ACCESSIBILITY_SETTINGS
+                        )
                 );
             } catch (Exception ex) {
                 Toast.makeText(
-                    this,
-                    "تعذر فتح إعدادات إمكانية الوصول",
-                    Toast.LENGTH_LONG
+                        this,
+                        "تعذر فتح إعدادات إمكانية الوصول",
+                        Toast.LENGTH_LONG
                 ).show();
             }
         });
 
-        // بطاقة النص المستهدف
+        // النص المستهدف
         LinearLayout targetCard = card();
 
         LinearLayout.LayoutParams targetCardLp = matchWrap();
@@ -135,7 +153,9 @@ public class MainActivity extends Activity {
                 "اكتب النص كما يظهر على الشاشة. بعد حفظه، " +
                 "افتح التطبيق المطلوب واضغط الزر B العائم " +
                 "ثم «اضغط النص المحفوظ».",
-                14, MUTED, false
+                14,
+                MUTED,
+                false
         );
 
         LinearLayout.LayoutParams helpLp = matchWrap();
@@ -149,8 +169,8 @@ public class MainActivity extends Activity {
         targetInput.setHint("مثال: تطوير");
 
         targetInput.setText(
-            getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getString(KEY_TARGET_TEXT, "")
+                getSharedPreferences(PREFS, MODE_PRIVATE)
+                        .getString(KEY_TARGET_TEXT, "")
         );
 
         targetInput.setTextSize(16);
@@ -159,9 +179,12 @@ public class MainActivity extends Activity {
         );
 
         targetInput.setBackground(
-            roundDrawable(
-                Color.rgb(6, 20, 34), CYAN, 1, 12
-            )
+                roundDrawable(
+                        Color.argb(230, 7, 13, 22),
+                        Color.argb(230, 35, 226, 244),
+                        1,
+                        14
+                )
         );
 
         LinearLayout.LayoutParams inputLp = matchWrap();
@@ -176,7 +199,8 @@ public class MainActivity extends Activity {
 
         saveButton.setOnClickListener(v -> {
             String target = targetInput.getText()
-                    .toString().trim();
+                    .toString()
+                    .trim();
 
             getSharedPreferences(PREFS, MODE_PRIVATE)
                     .edit()
@@ -186,15 +210,15 @@ public class MainActivity extends Activity {
             hideKeyboard();
 
             Toast.makeText(
-                this,
-                target.isEmpty()
-                    ? "تم مسح النص المستهدف"
-                    : "تم حفظ النص: " + target,
-                Toast.LENGTH_SHORT
+                    this,
+                    target.isEmpty()
+                            ? "تم مسح النص المستهدف"
+                            : "تم حفظ النص: " + target,
+                    Toast.LENGTH_SHORT
             ).show();
         });
 
-        // بطاقة الأدوات المتاحة
+        // الأدوات
         LinearLayout helpCard = card();
 
         LinearLayout.LayoutParams helpCardLp = matchWrap();
@@ -202,25 +226,29 @@ public class MainActivity extends Activity {
         page.addView(helpCard, helpCardLp);
 
         helpCard.addView(
-                text("أدوات النسخة الأولى", 19, TEXT, true)
+                text("أدوات النسخة الحالية", 19, TEXT, true)
         );
 
         addBullet(helpCard, "رجوع إلى الشاشة السابقة");
         addBullet(helpCard, "العودة إلى الرئيسية");
         addBullet(
-            helpCard,
-            "قراءة النصوص التي تعرضها التطبيقات عبر واجهة إمكانية الوصول"
+                helpCard,
+                "قراءة النصوص التي تعرضها التطبيقات عبر واجهة إمكانية الوصول"
         );
         addBullet(
-            helpCard,
-            "النقر على نص محفوظ بعد ضغطك عليه من القائمة العائمة"
+                helpCard,
+                "إنشاء السكربتات وإضافة الخطوات من الزر العائم"
         );
         addBullet(
-            helpCard,
-            "عرض نتيجة كل محاولة والتنبيه عند عدم العثور على الهدف"
+                helpCard,
+                "قص قوالب صور وحفظها محليًا لاستخدامها في المطابقة"
+        );
+        addBullet(
+                helpCard,
+                "عرض نتيجة كل محاولة والتنبيه عند عدم العثور على الهدف"
         );
 
-        // بطاقة آخر نتيجة
+        // آخر نتيجة
         LinearLayout resultCard = card();
 
         LinearLayout.LayoutParams resultLp = matchWrap();
@@ -232,7 +260,10 @@ public class MainActivity extends Activity {
         );
 
         lastResult = text(
-                "لم يتم تنفيذ أي إجراء بعد.", 14, MUTED, false
+                "لم يتم تنفيذ أي إجراء بعد.",
+                14,
+                MUTED,
+                false
         );
 
         LinearLayout.LayoutParams lastLp = matchWrap();
@@ -248,11 +279,13 @@ public class MainActivity extends Activity {
         refresh.setOnClickListener(v -> refreshStatus());
 
         TextView disclaimer = text(
-            "مهم: فعّل الخدمة بنفسك من إعدادات أندرويد. " +
-            "الأتمتة هنا تعمل بأوامر تضغطها أنت؛ لا تقرأ صور " +
-            "الشاشة عبر OCR بعد، وقد لا تتوفر عناصر واجهة " +
-            "بعض الألعاب لخدمة إمكانية الوصول.",
-            12, MUTED, false
+                "مهم: فعّل الخدمة بنفسك من إعدادات أندرويد. " +
+                "تُخزَّن السكربتات وقوالب الصور محليًا. " +
+                "تعتمد دقة مطابقة الصور على التشابه البصري " +
+                "وحدّ التطابق، وقد لا تعمل على كل واجهة أو لعبة.",
+                12,
+                MUTED,
+                false
         );
 
         LinearLayout.LayoutParams disclaimerLp = matchWrap();
@@ -263,35 +296,39 @@ public class MainActivity extends Activity {
     }
 
     private void refreshStatus() {
-        if (serviceStatus == null) return;
+        if (serviceStatus == null) {
+            return;
+        }
 
         boolean enabled = isServiceEnabled();
 
         serviceStatus.setText(
-            enabled
-                ? "● الخدمة مفعّلة — يفترض ظهور الزر B فوق التطبيقات."
-                : "○ الخدمة غير مفعّلة — افتح الإعدادات وفعّل Botna يدويًا."
+                enabled
+                        ? "● الخدمة مفعّلة — يفترض ظهور الزر B فوق التطبيقات."
+                        : "○ الخدمة غير مفعّلة — افتح الإعدادات وفعّل Botna يدويًا."
         );
 
         serviceStatus.setTextColor(
-            enabled ? CYAN : Color.rgb(255, 190, 100)
+                enabled
+                        ? CYAN
+                        : Color.rgb(255, 190, 100)
         );
 
         if (lastResult != null) {
             lastResult.setText(
-                getSharedPreferences(PREFS, MODE_PRIVATE)
-                    .getString(
-                        KEY_LAST_RESULT,
-                        "لم يتم تنفيذ أي إجراء بعد."
-                    )
+                    getSharedPreferences(PREFS, MODE_PRIVATE)
+                            .getString(
+                                    KEY_LAST_RESULT,
+                                    "لم يتم تنفيذ أي إجراء بعد."
+                            )
             );
         }
     }
 
     private boolean isServiceEnabled() {
         String enabledServices = Settings.Secure.getString(
-            getContentResolver(),
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                getContentResolver(),
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         );
 
         if (TextUtils.isEmpty(enabledServices)) {
@@ -299,7 +336,8 @@ public class MainActivity extends Activity {
         }
 
         ComponentName expected = new ComponentName(
-                this, BotnaAccessibilityService.class
+                this,
+                BotnaAccessibilityService.class
         );
 
         for (String item : enabledServices.split(":")) {
@@ -315,37 +353,46 @@ public class MainActivity extends Activity {
     }
 
     private void addBullet(
-            LinearLayout parent, String value
+            LinearLayout parent,
+            String value
     ) {
         TextView bullet = text(
-                "•  " + value, 14, MUTED, false
+                "•  " + value,
+                14,
+                MUTED,
+                false
         );
 
         LinearLayout.LayoutParams lp = matchWrap();
         lp.topMargin = dp(8);
-
         parent.addView(bullet, lp);
     }
 
     private LinearLayout card() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-
         layout.setPadding(
                 dp(16), dp(16), dp(16), dp(16)
         );
 
         layout.setBackground(
-            roundDrawable(
-                CARD, Color.rgb(28, 66, 91), 1, 18
-            )
+                roundDrawable(
+                        CARD,
+                        Color.argb(150, 35, 226, 244),
+                        1,
+                        20
+                )
         );
 
+        layout.setElevation(dp(5));
         return layout;
     }
 
     private TextView text(
-            String value, int sp, int color, boolean bold
+            String value,
+            int sp,
+            int color,
+            boolean bold
     ) {
         TextView view = new TextView(this);
 
@@ -356,7 +403,10 @@ public class MainActivity extends Activity {
         view.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
 
         if (bold) {
-            view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            view.setTypeface(
+                    Typeface.DEFAULT,
+                    Typeface.BOLD
+            );
         }
 
         return view;
@@ -368,12 +418,18 @@ public class MainActivity extends Activity {
         view.setText(value);
         view.setTextSize(14);
         view.setAllCaps(false);
-        view.setTextColor(Color.rgb(3, 20, 29));
+        view.setTextColor(Color.rgb(239, 248, 255));
 
         view.setBackground(
-            roundDrawable(CYAN, CYAN, 0, 14)
+                roundDrawable(
+                        Color.argb(105, 35, 226, 244),
+                        Color.argb(220, 35, 226, 244),
+                        1,
+                        14
+                )
         );
 
+        view.setElevation(dp(3));
         view.setPadding(
                 dp(10), dp(8), dp(10), dp(8)
         );
@@ -382,7 +438,10 @@ public class MainActivity extends Activity {
     }
 
     private GradientDrawable roundDrawable(
-            int fill, int stroke, int strokeWidth, int radius
+            int fill,
+            int stroke,
+            int strokeWidth,
+            int radius
     ) {
         GradientDrawable shape = new GradientDrawable();
 
@@ -398,27 +457,29 @@ public class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams matchWrap() {
         return new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
         );
     }
 
     private int dp(float value) {
         return Math.round(
-            value * getResources().getDisplayMetrics().density
+                value * getResources()
+                        .getDisplayMetrics().density
         );
     }
 
     private void hideKeyboard() {
         try {
             InputMethodManager imm =
-                (InputMethodManager) getSystemService(
-                    Context.INPUT_METHOD_SERVICE
-                );
+                    (InputMethodManager) getSystemService(
+                            Context.INPUT_METHOD_SERVICE
+                    );
 
             if (imm != null) {
                 imm.hideSoftInputFromWindow(
-                    targetInput.getWindowToken(), 0
+                        targetInput.getWindowToken(),
+                        0
                 );
             }
 
