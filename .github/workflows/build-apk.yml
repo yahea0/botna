@@ -2,9 +2,7 @@ name: Build Botna APK
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -24,13 +22,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Install Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
 
-      - name: Install Android SDK packages
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -40,7 +38,7 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Botna-debug-APK
