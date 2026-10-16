@@ -1,8 +1,7 @@
 package com.botna.automation;
 
 import android.accessibilityservice.AccessibilityService;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.AccessibilityWindowInfo;
+import android.accessibilityservice.GestureDescription;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.graphics.Bitmap;
@@ -17,13 +16,13 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Display;
-import android.accessibilityservice.GestureDescription;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -70,7 +69,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private View bubble;
     private View panel;
     private CropSelector cropSelector;
+
     private WindowManager.LayoutParams bubbleParams;
+
+    // هذا هو التعريف الذي كان ناقصًا في ملفك السابق.
+    private WindowManager.LayoutParams panelParams;
 
     private boolean panelVisible;
     private boolean running;
@@ -94,8 +97,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // لا يبدأ التنفيذ تلقائيًا عند تغير الشاشة.
-        // التشغيل يبدأ من أوامر المستخدم أو السكربت الذي يشغله.
+        // لا تبدأ أي أتمتة تلقائيًا بسبب تغير الشاشة.
+        // تنفيذ الخطوات يبدأ عندما يطلب المستخدم ذلك.
     }
 
     @Override
@@ -113,6 +116,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         cropSelector = null;
         bubble = null;
         panelVisible = false;
+        running = false;
 
         super.onDestroy();
     }
@@ -172,7 +176,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         b.setOnTouchListener((v, e) -> {
             switch (e.getAction()) {
-
                 case MotionEvent.ACTION_DOWN:
                     down[0] = e.getRawX();
                     down[1] = e.getRawY();
@@ -203,10 +206,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                         );
 
                         try {
-                            wm.updateViewLayout(
-                                    bubble,
-                                    bubbleParams
-                            );
+                            wm.updateViewLayout(bubble, bubbleParams);
                         } catch (Exception ignored) {
                         }
                     }
@@ -235,6 +235,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         try {
             wm.addView(b, bubbleParams);
             bubble = b;
+
         } catch (Exception e) {
             saveResult(
                     "تعذر إظهار الزر العائم: "
@@ -252,7 +253,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     // =========================================================
-    // لوحة زجاجية سوداء للأتمتة
+    // لوحة التحكم الزجاجية
     // =========================================================
 
     private void showPanel() {
@@ -294,8 +295,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         Button hide = button("إخفاء", false);
         hide.setOnClickListener(v -> hidePanel());
-        header.addView(hide, wrap());
 
+        header.addView(hide, wrap());
         root.addView(header);
 
         JSONObject script = BotnaStore.activeScript(this);
@@ -310,6 +311,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams nameLp = wrap();
         nameLp.topMargin = dp(7);
+
         root.addView(activeName, nameLp);
 
         LinearLayout scriptButtons = horizontal();
@@ -329,6 +331,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams scriptLp = wrap();
         scriptLp.topMargin = dp(7);
+
         root.addView(scriptButtons, scriptLp);
 
         newScript.setOnClickListener(v ->
@@ -355,13 +358,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 new LinearLayout.LayoutParams(-1, dp(40));
 
         readLp.topMargin = dp(7);
+
         root.addView(readScreenButton, readLp);
 
-        readScreenButton.setOnClickListener(
-                v -> readScreen()
-        );
+        readScreenButton.setOnClickListener(v -> readScreen());
 
-        // صف إضافة الخطوات الأول
         LinearLayout addRow1 = horizontal();
 
         addButton(addRow1, "＋ نقر نص", () ->
@@ -406,9 +407,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams addLp = wrap();
         addLp.topMargin = dp(7);
+
         root.addView(addRow1, addLp);
 
-        // صف الإجراءات والشروط
         LinearLayout addRow2 = horizontal();
 
         addButton(addRow2, "رجوع", () -> {
@@ -432,6 +433,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams add2Lp = wrap();
         add2Lp.topMargin = dp(6);
+
         root.addView(addRow2, add2Lp);
 
         LinearLayout addRow3 = horizontal();
@@ -457,9 +459,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams add3Lp = wrap();
         add3Lp.topMargin = dp(6);
+
         root.addView(addRow3, add3Lp);
 
-        // تشغيل وإيقاف
         LinearLayout runRow = horizontal();
 
         Button run = button("▶ تشغيل السكربت", true);
@@ -477,6 +479,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams runLp = wrap();
         runLp.topMargin = dp(8);
+
         root.addView(runRow, runLp);
 
         run.setOnClickListener(v -> runActiveScript());
@@ -486,7 +489,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
             report("تم إيقاف السكربت يدويًا.");
         });
 
-        // قائمة الخطوات
         ScrollView stepScroll = new ScrollView(this);
         stepScroll.setFillViewport(false);
 
@@ -502,8 +504,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams stLp = wrap();
         stLp.topMargin = dp(10);
-        root.addView(stepsTitle, stLp);
 
+        root.addView(stepsTitle, stLp);
         stepScroll.addView(stepList);
 
         LinearLayout.LayoutParams scrollLp =
@@ -521,6 +523,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout.LayoutParams resultLp = wrap();
         resultLp.topMargin = dp(7);
+
         root.addView(resultLabel, resultLp);
 
         populateSteps(script);
@@ -531,6 +534,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         int screenHeight =
                 getResources().getDisplayMetrics().heightPixels;
 
+        // تعريف النافذة موجود هنا ويعتمد على الحقل المعرّف بالأعلى.
         panelParams = new WindowManager.LayoutParams(
                 Math.min(dp(348), screenWidth - dp(20)),
                 Math.min(dp(640), screenHeight - dp(80)),
@@ -573,7 +577,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     // =========================================================
-    // قائمة الخطوات وترتيبها
+    // عرض الخطوات وترتيبها
     // =========================================================
 
     private void populateSteps(JSONObject script) {
@@ -625,6 +629,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
             LinearLayout.LayoutParams cardLp = wrap();
             cardLp.topMargin = dp(5);
+
             stepList.addView(card, cardLp);
 
             TextView number = label(
@@ -760,15 +765,23 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
     }
 
+    // =========================================================
+    // تخزين الخطوات وتعديلها
+    // =========================================================
+
     private JSONObject ensureScript() {
         return BotnaStore.activeScript(this);
     }
 
-    private JSONObject addStep(String type, String label) {
+    private JSONObject addStep(
+            String type,
+            String label
+    ) {
         JSONObject script = ensureScript();
         JSONArray steps = BotnaStore.steps(script);
 
         JSONObject step = BotnaStore.newStep(type, label);
+
         steps.put(step);
 
         BotnaStore.saveSteps(this, script, steps);
@@ -778,6 +791,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void deleteStep(int index) {
         JSONObject script = ensureScript();
+
         JSONArray old = BotnaStore.steps(script);
         JSONArray next = new JSONArray();
 
@@ -788,6 +802,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
 
         BotnaStore.saveSteps(this, script, next);
+
         rebuildPanel();
     }
 
@@ -826,10 +841,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         report("تم تغيير ترتيب الخطوة.");
     }
 
-    // =========================================================
-    // تحرير الخطوات وإدارة السكربتات
-    // =========================================================
-
     private void editStep(int index) {
         JSONObject script = ensureScript();
         JSONArray steps = BotnaStore.steps(script);
@@ -863,11 +874,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                                     50,
                                     99,
                                     value -> {
-                                        putInt(
-                                                step,
-                                                "threshold",
-                                                value
-                                        );
+                                        putInt(step, "threshold", value);
 
                                         BotnaStore.saveSteps(
                                                 this,
@@ -897,6 +904,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     step.optString("value"),
                     value -> {
                         putString(step, "value", value);
+
                         putString(
                                 step,
                                 "label",
@@ -971,7 +979,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void chooseScriptDialog() {
         JSONArray all = BotnaStore.scripts(this);
-
         String[] names = new String[all.length()];
 
         for (int i = 0; i < all.length(); i++) {
@@ -1012,7 +1019,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         input.setSingleLine(true);
         input.setTextColor(TEXT);
         input.setHintTextColor(MUTED);
-
         input.setText(initial);
         input.setSelectAllOnFocus(true);
 
@@ -1088,15 +1094,15 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 )
                 .setNegativeButton(
                         "إلغاء",
-                        (d, w) -> { }
+                        (d, w) -> {
+                        }
                 )
                 .create();
 
         try {
             if (dialog.getWindow() != null) {
                 dialog.getWindow().setType(
-                        WindowManager.LayoutParams
-                                .TYPE_ACCESSIBILITY_OVERLAY
+                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
                 );
             }
 
@@ -1127,8 +1133,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         try {
             if (dialog.getWindow() != null) {
                 dialog.getWindow().setType(
-                        WindowManager.LayoutParams
-                                .TYPE_ACCESSIBILITY_OVERLAY
+                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
                 );
             }
 
@@ -1144,13 +1149,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     // =========================================================
-    // قص الهدف من الشاشة
+    // التقاط الشاشة وأداة قص الأهداف
     // =========================================================
 
     private void prepareCropStep() {
         JSONObject script = ensureScript();
         JSONArray steps = BotnaStore.steps(script);
-
         JSONObject target = null;
 
         for (int i = steps.length() - 1; i >= 0; i--) {
@@ -1179,8 +1183,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void beginCaptureForCrop() {
         if (Build.VERSION.SDK_INT < 30) {
             report(
-                    "قص الصور يحتاج Android 11 أو أحدث "
-                            + "لدعم لقطة الشاشة عبر خدمة إمكانية الوصول."
+                    "قص الصور يحتاج Android 11 أو أحدث."
             );
 
             return;
@@ -1225,7 +1228,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     Display.DEFAULT_DISPLAY,
                     getMainExecutor(),
                     new TakeScreenshotCallback() {
-
                         @Override
                         public void onSuccess(ScreenshotResult result) {
                             HardwareBuffer buffer = null;
@@ -1311,7 +1313,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         } catch (Exception e) {
             cropSelector = null;
-
             screenshot.recycle();
 
             showBubble();
@@ -1403,7 +1404,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
             JSONObject script = ensureScript();
             JSONArray steps = BotnaStore.steps(script);
-
             boolean found = false;
 
             for (int i = 0; i < steps.length(); i++) {
@@ -1449,7 +1449,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
             report(
                     "تم قص الهدف وحفظ الصورة. "
-                            + "يمكنك قص زوايا/حالات إضافية لنفس الخطوة."
+                            + "يمكنك قص زوايا إضافية لنفس الخطوة."
             );
 
             screenshot.recycle();
@@ -1490,16 +1490,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
         );
 
         private final RectF rect = new RectF();
-
-        // 0 رسم جديد، 1-4 زوايا، 5 تحريك،
-        // 6-9 تغيير من المنتصف والحواف، 10 حفظ/إلغاء
-        private int mode = 0;
-
-        private float downX;
-        private float downY;
-
         private final RectF initial = new RectF();
 
+        private int mode;
+        private float downX;
+        private float downY;
         private final float density;
 
         CropSelector(Bitmap bitmap) {
@@ -1508,7 +1503,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
             screenshot = bitmap;
 
             density = getResources()
-                    .getDisplayMetrics().density;
+                    .getDisplayMetrics()
+                    .density;
 
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         }
@@ -1540,41 +1536,17 @@ public class BotnaAccessibilityService extends AccessibilityService {
             c.drawBitmap(
                     screenshot,
                     null,
-                    new RectF(
-                            0,
-                            0,
-                            getWidth(),
-                            getHeight()
-                    ),
+                    new RectF(0, 0, getWidth(), getHeight()),
                     paint
             );
 
-            // تعتيم خارج منطقة القص
             paint.setColor(Color.argb(155, 0, 0, 0));
 
-            c.drawRect(
-                    0, 0, getWidth(), rect.top, paint
-            );
+            c.drawRect(0, 0, getWidth(), rect.top, paint);
+            c.drawRect(0, rect.bottom, getWidth(), getHeight(), paint);
+            c.drawRect(0, rect.top, rect.left, rect.bottom, paint);
+            c.drawRect(rect.right, rect.top, getWidth(), rect.bottom, paint);
 
-            c.drawRect(
-                    0, rect.bottom,
-                    getWidth(), getHeight(),
-                    paint
-            );
-
-            c.drawRect(
-                    0, rect.top,
-                    rect.left, rect.bottom,
-                    paint
-            );
-
-            c.drawRect(
-                    rect.right, rect.top,
-                    getWidth(), rect.bottom,
-                    paint
-            );
-
-            // إطار مضيء ومقابض
             paint.setColor(CYAN);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(3 * density);
@@ -1590,37 +1562,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
             c.drawCircle(rect.left, rect.bottom, r, paint);
             c.drawCircle(rect.right, rect.bottom, r, paint);
 
-            c.drawCircle(
-                    rect.centerX(),
-                    rect.top,
-                    r,
-                    paint
-            );
+            c.drawCircle(rect.centerX(), rect.top, r, paint);
+            c.drawCircle(rect.centerX(), rect.bottom, r, paint);
+            c.drawCircle(rect.left, rect.centerY(), r, paint);
+            c.drawCircle(rect.right, rect.centerY(), r, paint);
 
-            c.drawCircle(
-                    rect.centerX(),
-                    rect.bottom,
-                    r,
-                    paint
-            );
-
-            c.drawCircle(
-                    rect.left,
-                    rect.centerY(),
-                    r,
-                    paint
-            );
-
-            c.drawCircle(
-                    rect.right,
-                    rect.centerY(),
-                    r,
-                    paint
-            );
-
-            // شريط التعليمات
             paint.setColor(Color.argb(225, 5, 7, 12));
-            paint.setStyle(Paint.Style.FILL);
 
             c.drawRoundRect(
                     new RectF(
@@ -1645,7 +1592,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     paint
             );
 
-            // حفظ وإلغاء
             float by = getHeight() - 60 * density;
 
             paint.setColor(Color.argb(240, 8, 14, 22));
@@ -1689,7 +1635,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
             if (e.getAction() == MotionEvent.ACTION_DOWN) {
                 downX = x;
                 downY = y;
-
                 initial.set(rect);
 
                 if (y > getHeight() - 70 * density) {
@@ -1697,44 +1642,28 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     return true;
                 }
 
-                if (distance(
-                        x, y, rect.left, rect.top
-                ) < 35 * density) {
+                if (distance(x, y, rect.left, rect.top) < 35 * density) {
                     mode = 1;
 
-                } else if (distance(
-                        x, y, rect.right, rect.top
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.right, rect.top) < 35 * density) {
                     mode = 2;
 
-                } else if (distance(
-                        x, y, rect.left, rect.bottom
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.left, rect.bottom) < 35 * density) {
                     mode = 3;
 
-                } else if (distance(
-                        x, y, rect.right, rect.bottom
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.right, rect.bottom) < 35 * density) {
                     mode = 4;
 
-                } else if (distance(
-                        x, y, rect.centerX(), rect.top
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.centerX(), rect.top) < 35 * density) {
                     mode = 6;
 
-                } else if (distance(
-                        x, y, rect.centerX(), rect.bottom
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.centerX(), rect.bottom) < 35 * density) {
                     mode = 7;
 
-                } else if (distance(
-                        x, y, rect.left, rect.centerY()
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.left, rect.centerY()) < 35 * density) {
                     mode = 8;
 
-                } else if (distance(
-                        x, y, rect.right, rect.centerY()
-                ) < 35 * density) {
+                } else if (distance(x, y, rect.right, rect.centerY()) < 35 * density) {
                     mode = 9;
 
                 } else if (rect.contains(x, y)) {
@@ -1763,13 +1692,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
                 } else if (mode == 1) {
                     rect.left = clamp(
-                            downX + dx,
+                            initial.left + dx,
                             0,
                             rect.right - 20 * density
                     );
 
                     rect.top = clamp(
-                            downY + dy,
+                            initial.top + dy,
                             0,
                             rect.bottom - 20 * density
                     );
@@ -1935,8 +1864,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
             } else {
                 report(
-                        "لم يصل التطابق إلى الحد المطلوب. "
-                                + "أفضل تطابق تقريبي: "
+                        "لم يصل التطابق إلى الحد المطلوب. أفضل تطابق تقريبي: "
                                 + (result == null ? 0 : result.score)
                                 + "%."
                 );
@@ -2002,10 +1930,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             return;
         }
 
-        JSONObject script = BotnaStore.getScript(
-                this,
-                scriptId
-        );
+        JSONObject script = BotnaStore.getScript(this, scriptId);
 
         if (script == null) {
             running = false;
@@ -2052,10 +1977,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         if (TYPE_IF_SUCCESS.equals(type)
                 || TYPE_IF_FAIL.equals(type)) {
 
-            boolean condition =
-                    TYPE_IF_SUCCESS.equals(type)
-                            ? lastStepSuccess
-                            : !lastStepSuccess;
+            boolean condition = TYPE_IF_SUCCESS.equals(type)
+                    ? lastStepSuccess
+                    : !lastStepSuccess;
 
             branches.push(
                     new Branch(activeBefore, condition)
@@ -2200,8 +2124,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     lastStepSuccess = false;
 
                     report(
-                            "فشل التقاط الشاشة للمطابقة: "
-                                    + error
+                            "فشل التقاط الشاشة للمطابقة: " + error
                     );
 
                     handler.post(
@@ -2215,25 +2138,18 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     return;
                 }
 
-                ImageMatcher.Result match =
-                        matchStep(screen, step);
-
+                ImageMatcher.Result match = matchStep(screen, step);
                 screen.recycle();
 
                 boolean matched = match != null
-                        && match.score >= step.optInt(
-                                "threshold",
-                                85
-                        );
+                        && match.score >= step.optInt("threshold", 85);
 
                 if (!matched) {
                     lastStepSuccess = false;
 
                     report(
                             "فشلت مطابقة الصورة؛ أفضل نتيجة "
-                                    + (match == null
-                                    ? 0
-                                    : match.score)
+                                    + (match == null ? 0 : match.score)
                                     + "%"
                     );
 
@@ -2300,15 +2216,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         for (int i = 0; i < images.length(); i++) {
             String name = images.optString(i);
-
             Bitmap bitmap = readTemplate(name);
 
             if (bitmap != null) {
                 templates.add(
-                        new ImageMatcher.NamedBitmap(
-                                name,
-                                bitmap
-                        )
+                        new ImageMatcher.NamedBitmap(name, bitmap)
                 );
             }
         }
@@ -2332,11 +2244,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             ScreenshotCallback callback
     ) {
         if (Build.VERSION.SDK_INT < 30) {
-            callback.done(
-                    null,
-                    "يتطلب Android 11 أو أحدث"
-            );
-
+            callback.done(null, "يتطلب Android 11 أو أحدث");
             return;
         }
 
@@ -2404,7 +2312,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 boolean dispatched = dispatchGesture(
                         gesture,
                         new GestureResultCallback() {
-
                             @Override
                             public void onCompleted(
                                     GestureDescription description
@@ -2457,7 +2364,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     // =========================================================
-    // البحث عن النصوص القابلة للنقر
+    // قراءة الشاشة والنقر على النص
     // =========================================================
 
     private boolean clickText(String target) {
@@ -2514,9 +2421,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo root = getRootInActiveWindow();
 
-        if (root != null &&
-                root.getPackageName() != null &&
-                getPackageName().contentEquals(
+        if (root != null
+                && root.getPackageName() != null
+                && getPackageName().contentEquals(
                         root.getPackageName()
                 )) {
 
@@ -2540,8 +2447,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 ? ""
                 : node.getText().toString().trim();
 
-        if (value.isEmpty() &&
-                node.getContentDescription() != null) {
+        if (value.isEmpty()
+                && node.getContentDescription() != null) {
             value = node.getContentDescription()
                     .toString()
                     .trim();
@@ -2568,11 +2475,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             boolean found;
 
             try {
-                found = findAndClick(
-                        child,
-                        target,
-                        exact
-                );
+                found = findAndClick(child, target, exact);
             } finally {
                 child.recycle();
             }
@@ -2637,8 +2540,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         if (values.isEmpty()) {
             report(
-                    "لم تظهر نصوص قابلة للقراءة. بعض الألعاب "
-                            + "ترسم الأزرار داخل صورة أو مشهد Unity."
+                    "لم تظهر نصوص قابلة للقراءة. "
+                            + "بعض الألعاب ترسم الأزرار داخل صورة أو مشهد Unity."
             );
 
         } else {
@@ -2656,9 +2559,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
             List<String> values,
             int depth
     ) {
-        if (node == null ||
-                values.size() >= 35 ||
-                depth > 24) {
+        if (node == null
+                || values.size() >= 35
+                || depth > 24) {
             return;
         }
 
@@ -2719,7 +2622,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     // =========================================================
-    // أدوات مساعدة
+    // عناصر الواجهة والمساعدات
     // =========================================================
 
     private void addButton(
@@ -2919,9 +2822,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private Bitmap readTemplate(String name) {
-        if (name == null ||
-                name.contains("/") ||
-                name.contains("..")) {
+        if (name == null
+                || name.contains("/")
+                || name.contains("..")) {
             return null;
         }
 
@@ -2935,17 +2838,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
 
         try {
-            return BitmapFactoryCompat.decode(f);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static final class BitmapFactoryCompat {
-        static Bitmap decode(File f) {
             return android.graphics.BitmapFactory.decodeFile(
                     f.getAbsolutePath()
             );
+        } catch (Exception e) {
+            return null;
         }
     }
 }
