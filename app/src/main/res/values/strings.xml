@@ -1,13 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Botna</string>
 
-    <string name="accessibility_service_name">
-        Botna — خدمة الأتمتة
-    </string>
-
     <string name="accessibility_description">
-        تتيح الخدمة إظهار أدوات تحكم عائمة وقراءة عناصر الواجهة
-        والضغط على عنصر تختاره أنت. لا تنفذ أي ضغط تلقائيًا
-        دون أمر مباشر من المستخدم.
+        تتيح خدمة بوتنا قراءة عناصر الواجهة والتقاط الشاشة
+        بعد تفعيلك للخدمة، وحفظ قوالب الصور محليًا،
+        وتنفيذ خطوات الأتمتة التي أنشأتها يدويًا.
     </string>
 </resources>
