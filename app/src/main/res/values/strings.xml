@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Botna</string>
+
+    <string name="accessibility_service_name">
+        Botna — خدمة الأتمتة
+    </string>
+
+    <string name="accessibility_description">
+        تتيح الخدمة إظهار أدوات تحكم عائمة وقراءة عناصر الواجهة
+        والضغط على عنصر تختاره أنت. لا تنفذ أي ضغط تلقائيًا
+        دون أمر مباشر من المستخدم.
+    </string>
+</resources>
