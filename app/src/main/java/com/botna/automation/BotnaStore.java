@@ -11,9 +11,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/**
- * تخزين السكربتات والخطوات محليًا على الهاتف.
- */
+/** Local-only storage for Botna scripts and step definitions. */
 public final class BotnaStore {
 
     public static final String PREFS = "botna_settings";
@@ -69,7 +67,8 @@ public final class BotnaStore {
         for (int i = 0; i < all.length(); i++) {
             JSONObject item = all.optJSONObject(i);
 
-            if (item != null && id.equals(item.optString("id"))) {
+            if (item != null &&
+                    id.equals(item.optString("id"))) {
                 return item;
             }
         }
@@ -161,7 +160,7 @@ public final class BotnaStore {
 
         try {
             script.put("steps", steps);
-        } catch (JSONException ignored) {
+        } catch (JSONException e) {
             return;
         }
 
@@ -174,7 +173,14 @@ public final class BotnaStore {
                     script.optString("id")
                             .equals(item.optString("id"))) {
 
-                all.put(i, script);
+                // إصلاح الخطأ: JSONArray.put(index, value)
+                // قد يرمي JSONException، لذلك نعالجه هنا.
+                try {
+                    all.put(i, script);
+                } catch (JSONException e) {
+                    return;
+                }
+
                 saveScripts(context, all);
                 return;
             }
