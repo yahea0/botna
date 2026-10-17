@@ -17,7 +17,6 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -26,7 +25,6 @@ import android.widget.Toast;
 public class MainActivity extends Activity {
 
     private static final String PREFS = "botna_settings";
-    private static final String KEY_TARGET_TEXT = "target_text";
     private static final String KEY_LAST_RESULT = "last_result";
 
     private static final int BG = Color.rgb(5, 7, 12);
@@ -37,7 +35,7 @@ public class MainActivity extends Activity {
 
     private TextView serviceStatus;
     private TextView lastResult;
-    private EditText targetInput;
+    private TextView dataSummary;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,237 +63,88 @@ public class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(20), dp(22), dp(20), dp(28));
         page.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-
         scroll.addView(page);
 
-        TextView title = text(
-                "بوتنا  Botna",
-                29,
-                TEXT,
-                true
-        );
-
+        TextView title = text("بوتنا  Botna", 30, TEXT, true);
         page.addView(title, matchWrap());
+        TextView subtitle = text("منصة أتمتة ذكية ومباشرة لهاتفك", 15, MUTED, false);
+        LinearLayout.LayoutParams subLp = matchWrap(); subLp.topMargin = dp(4); page.addView(subtitle, subLp);
 
-        TextView subtitle = text(
-                "مساعد أتمتة مباشر لهاتفك",
-                15,
-                MUTED,
-                false
-        );
-
-        LinearLayout.LayoutParams subLp = matchWrap();
-        subLp.topMargin = dp(4);
-        page.addView(subtitle, subLp);
-
-        // حالة الخدمة
         LinearLayout statusCard = card();
+        LinearLayout.LayoutParams statusCardLp = matchWrap(); statusCardLp.topMargin = dp(22); page.addView(statusCard, statusCardLp);
+        statusCard.addView(text("حالة خدمة الأتمتة", 18, TEXT, true));
+        serviceStatus = text("جارٍ فحص الحالة...", 14, MUTED, false);
+        LinearLayout.LayoutParams statusTextLp = matchWrap(); statusTextLp.topMargin = dp(8); statusCard.addView(serviceStatus, statusTextLp);
+        Button settingsButton = button("تفعيل / إدارة خدمة إمكانية الوصول");
+        LinearLayout.LayoutParams settingsLp = matchWrap(); settingsLp.topMargin = dp(14); statusCard.addView(settingsButton, settingsLp);
+        settingsButton.setOnClickListener(v -> openAccessibilitySettings());
 
-        LinearLayout.LayoutParams cardLp = matchWrap();
-        cardLp.topMargin = dp(22);
-        page.addView(statusCard, cardLp);
+        LinearLayout dashboard = card();
+        LinearLayout.LayoutParams dashLp = matchWrap(); dashLp.topMargin = dp(16); page.addView(dashboard, dashLp);
+        dashboard.addView(text("مركز التحكم", 19, TEXT, true));
+        TextView dashboardHelp = text("أنشئ السكربتات من الفقاعة B العائمة، واضبط مكتبة الصور، وشغّل الأوامر مع إمكانية الإيقاف والاستكمال.", 14, MUTED, false);
+        LinearLayout.LayoutParams dashHelpLp = matchWrap(); dashHelpLp.topMargin = dp(7); dashboard.addView(dashboardHelp, dashHelpLp);
 
-        TextView statusTitle = text(
-                "حالة خدمة الأتمتة",
-                18,
-                TEXT,
-                true
-        );
+        LinearLayout primaryRow = new LinearLayout(this); primaryRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams primaryLp = matchWrap(); primaryLp.topMargin = dp(12); dashboard.addView(primaryRow, primaryLp);
+        Button openService = button("إدارة الخدمة");
+        Button aiSettings = button("إعدادات الذكاء الاصطناعي");
+        primaryRow.addView(openService, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams aiLp = new LinearLayout.LayoutParams(0, dp(48), 1); aiLp.leftMargin = dp(7); primaryRow.addView(aiSettings, aiLp);
+        openService.setOnClickListener(v -> openAccessibilitySettings());
+        aiSettings.setOnClickListener(v -> BotnaAICompiler.showSettingsDialog(this, false, this::refreshStatus));
 
-        statusCard.addView(statusTitle);
-
-        serviceStatus = text(
-                "جارٍ فحص الحالة...",
-                14,
-                MUTED,
-                false
-        );
-
-        LinearLayout.LayoutParams statusTextLp = matchWrap();
-        statusTextLp.topMargin = dp(8);
-        statusCard.addView(serviceStatus, statusTextLp);
-
-        Button settingsButton = button(
-                "تفعيل / إدارة خدمة إمكانية الوصول"
-        );
-
-        LinearLayout.LayoutParams settingsLp = matchWrap();
-        settingsLp.topMargin = dp(14);
-        statusCard.addView(settingsButton, settingsLp);
-
-        settingsButton.setOnClickListener(v -> {
-            try {
-                startActivity(
-                        new Intent(
-                                Settings.ACTION_ACCESSIBILITY_SETTINGS
-                        )
-                );
-            } catch (Exception ex) {
-                Toast.makeText(
-                        this,
-                        "تعذر فتح إعدادات إمكانية الوصول",
-                        Toast.LENGTH_LONG
-                ).show();
-            }
-        });
-
-        // النص المستهدف
-        LinearLayout targetCard = card();
-
-        LinearLayout.LayoutParams targetCardLp = matchWrap();
-        targetCardLp.topMargin = dp(16);
-        page.addView(targetCard, targetCardLp);
-
-        targetCard.addView(
-                text("النقر على نص محدد", 19, TEXT, true)
-        );
-
-        TextView targetHelp = text(
-                "اكتب النص كما يظهر على الشاشة. بعد حفظه، " +
-                "افتح التطبيق المطلوب واضغط الزر B العائم " +
-                "ثم «اضغط النص المحفوظ».",
-                14,
-                MUTED,
-                false
-        );
-
-        LinearLayout.LayoutParams helpLp = matchWrap();
-        helpLp.topMargin = dp(8);
-        targetCard.addView(targetHelp, helpLp);
-
-        targetInput = new EditText(this);
-        targetInput.setSingleLine(true);
-        targetInput.setTextColor(TEXT);
-        targetInput.setHintTextColor(MUTED);
-        targetInput.setHint("مثال: تطوير");
-
-        targetInput.setText(
-                getSharedPreferences(PREFS, MODE_PRIVATE)
-                        .getString(KEY_TARGET_TEXT, "")
-        );
-
-        targetInput.setTextSize(16);
-        targetInput.setPadding(
-                dp(12), dp(12), dp(12), dp(12)
-        );
-
-        targetInput.setBackground(
-                roundDrawable(
-                        Color.argb(230, 7, 13, 22),
-                        Color.argb(230, 35, 226, 244),
-                        1,
-                        14
-                )
-        );
-
-        LinearLayout.LayoutParams inputLp = matchWrap();
-        inputLp.topMargin = dp(14);
-        targetCard.addView(targetInput, inputLp);
-
-        Button saveButton = button("حفظ النص المستهدف");
-
-        LinearLayout.LayoutParams saveLp = matchWrap();
-        saveLp.topMargin = dp(10);
-        targetCard.addView(saveButton, saveLp);
-
-        saveButton.setOnClickListener(v -> {
-            String target = targetInput.getText()
-                    .toString()
-                    .trim();
-
-            getSharedPreferences(PREFS, MODE_PRIVATE)
-                    .edit()
-                    .putString(KEY_TARGET_TEXT, target)
-                    .apply();
-
-            hideKeyboard();
-
-            Toast.makeText(
-                    this,
-                    target.isEmpty()
-                            ? "تم مسح النص المستهدف"
-                            : "تم حفظ النص: " + target,
-                    Toast.LENGTH_SHORT
-            ).show();
-        });
-
-        // الأدوات
-        LinearLayout helpCard = card();
-
-        LinearLayout.LayoutParams helpCardLp = matchWrap();
-        helpCardLp.topMargin = dp(16);
-        page.addView(helpCard, helpCardLp);
-
-        helpCard.addView(
-                text("أدوات النسخة الحالية", 19, TEXT, true)
-        );
-
-        addBullet(helpCard, "رجوع إلى الشاشة السابقة");
-        addBullet(helpCard, "العودة إلى الرئيسية");
-        addBullet(
-                helpCard,
-                "قراءة النصوص التي تعرضها التطبيقات عبر واجهة إمكانية الوصول"
-        );
-        addBullet(
-                helpCard,
-                "إنشاء السكربتات وإضافة الخطوات من الزر العائم"
-        );
-        addBullet(
-                helpCard,
-                "قص قوالب صور وحفظها محليًا لاستخدامها في المطابقة"
-        );
-        addBullet(
-                helpCard,
-                "عرض نتيجة كل محاولة والتنبيه عند عدم العثور على الهدف"
-        );
-
-        // آخر نتيجة
-        LinearLayout resultCard = card();
-
-        LinearLayout.LayoutParams resultLp = matchWrap();
-        resultLp.topMargin = dp(16);
-        page.addView(resultCard, resultLp);
-
-        resultCard.addView(
-                text("آخر نتيجة", 18, TEXT, true)
-        );
-
-        lastResult = text(
-                "لم يتم تنفيذ أي إجراء بعد.",
-                14,
-                MUTED,
-                false
-        );
-
-        LinearLayout.LayoutParams lastLp = matchWrap();
-        lastLp.topMargin = dp(8);
-        resultCard.addView(lastResult, lastLp);
-
-        Button refresh = button("تحديث الحالة والنتيجة");
-
-        LinearLayout.LayoutParams refreshLp = matchWrap();
-        refreshLp.topMargin = dp(12);
-        resultCard.addView(refresh, refreshLp);
-
+        LinearLayout secondaryRow = new LinearLayout(this); secondaryRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams secondaryLp = matchWrap(); secondaryLp.topMargin = dp(8); dashboard.addView(secondaryRow, secondaryLp);
+        Button commandGuide = button("دليل الأوامر المخصصة");
+        Button refresh = button("تحديث الحالة");
+        secondaryRow.addView(commandGuide, new LinearLayout.LayoutParams(0, dp(44), 1));
+        LinearLayout.LayoutParams refreshButtonLp = new LinearLayout.LayoutParams(0, dp(44), 1); refreshButtonLp.leftMargin = dp(7); secondaryRow.addView(refresh, refreshButtonLp);
+        commandGuide.setOnClickListener(v -> showCommandGuide());
         refresh.setOnClickListener(v -> refreshStatus());
 
-        TextView disclaimer = text(
-                "مهم: فعّل الخدمة بنفسك من إعدادات أندرويد. " +
-                "تُخزَّن السكربتات وقوالب الصور محليًا. " +
-                "تعتمد دقة مطابقة الصور على التشابه البصري " +
-                "وحدّ التطابق، وقد لا تعمل على كل واجهة أو لعبة.",
-                12,
-                MUTED,
-                false
-        );
+        LinearLayout dataCard = card();
+        LinearLayout.LayoutParams dataLp = matchWrap(); dataLp.topMargin = dp(16); page.addView(dataCard, dataLp);
+        dataCard.addView(text("بياناتك المحلية", 18, TEXT, true));
+        int scriptsCount = BotnaStore.scripts(this).length();
+        int imagesCount = BotnaStore.imageLibrary(this).length();
+        dataSummary = text("السكربتات المحفوظة: " + scriptsCount + "\nقوالب مكتبة الصور: " + imagesCount + "\nحالة مترجم الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "مفتاح محفوظ" : "يتطلب إعداد مفتاح API"), 14, MUTED, false);
+        dataCard.addView(dataSummary, matchWrap());
+        TextView localInfo = text("السكربتات وقوالب الصور تبقى في مساحة التطبيق. يُشفّر مفتاح API محليًا باستخدام Android Keystore؛ لا تشارك المفتاح ولا تضعه في مستودع GitHub. استخدام مزوّد الذكاء الاصطناعي عبر API قد يكلّف رسومًا حسب حسابك.", 12, MUTED, false);
+        LinearLayout.LayoutParams localInfoLp = matchWrap(); localInfoLp.topMargin = dp(10); dataCard.addView(localInfo, localInfoLp);
 
-        LinearLayout.LayoutParams disclaimerLp = matchWrap();
-        disclaimerLp.topMargin = dp(20);
-        page.addView(disclaimer, disclaimerLp);
+        LinearLayout resultCard = card();
+        LinearLayout.LayoutParams resultLp = matchWrap(); resultLp.topMargin = dp(16); page.addView(resultCard, resultLp);
+        resultCard.addView(text("آخر نتيجة", 18, TEXT, true));
+        lastResult = text("لم يتم تنفيذ أي إجراء بعد.", 14, MUTED, false);
+        LinearLayout.LayoutParams lastLp = matchWrap(); lastLp.topMargin = dp(8); resultCard.addView(lastResult, lastLp);
+        Button refreshResult = button("تحديث السجل");
+        LinearLayout.LayoutParams refreshResultLp = matchWrap(); refreshResultLp.topMargin = dp(12); resultCard.addView(refreshResult, refreshResultLp);
+        refreshResult.setOnClickListener(v -> refreshStatus());
 
+        TextView disclaimer = text("ملاحظة: تفعيل خدمة إمكانية الوصول يتم يدويًا من إعدادات أندرويد. قبل تشغيل أي أمر مولّد بالذكاء الاصطناعي راجع معاينة الخطوات؛ لن يُسمح للمترجم بتنفيذ كود عشوائي خارج أنواع الأوامر المدعومة.", 12, MUTED, false);
+        LinearLayout.LayoutParams disclaimerLp = matchWrap(); disclaimerLp.topMargin = dp(20); page.addView(disclaimer, disclaimerLp);
         setContentView(scroll);
     }
 
+    private void openAccessibilitySettings() {
+        try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+        catch (Exception ex) { Toast.makeText(this, "تعذر فتح إعدادات إمكانية الوصول", Toast.LENGTH_LONG).show(); }
+    }
+
+    private void showCommandGuide() {
+        String guide = "أمثلة للأوامر المدعومة:\n\n" +
+                "• تابع صورة رقم 2 بالمكتبة دون ضغط\n" +
+                "• اضغط على صورة رقم 1 ثم انتظر ثانيتين\n" +
+                "• إذا وجدت الصورة رقم 3 انتظر 1000 مللي ثانية ثم ارجع\n" +
+                "• انقر نص: تطوير\n" +
+                "• اكتب: مرحبًا\n" +
+                "• انقر موقع 50,70\n" +
+                "• مرر للأسفل\n" +
+                "• كرر 3 مرات: تابع صورة رقم 1 بالمكتبة دون ضغط\n" +
+                "\nأفضل نتيجة للأوامر المركبة تأتي مع إعداد مفتاح API في إعدادات الذكاء الاصطناعي. راجع دائمًا معاينة الترجمة قبل التنفيذ.";
+        new AlertDialog.Builder(this).setTitle("دليل الأوامر المخصصة").setMessage(guide).setPositiveButton("حسنًا", null).show();
+    }
 
     @Override
     public void onBackPressed() {
@@ -329,6 +178,12 @@ public class MainActivity extends Activity {
                         ? CYAN
                         : Color.rgb(255, 190, 100)
         );
+
+        if (dataSummary != null) {
+            dataSummary.setText("السكربتات المحفوظة: " + BotnaStore.scripts(this).length()
+                    + "\nقوالب مكتبة الصور: " + BotnaStore.imageLibrary(this).length()
+                    + "\nحالة مترجم الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "مفتاح محفوظ" : "يتطلب إعداد مفتاح API"));
+        }
 
         if (lastResult != null) {
             lastResult.setText(
@@ -493,13 +348,9 @@ public class MainActivity extends Activity {
                     );
 
             if (imm != null) {
-                imm.hideSoftInputFromWindow(
-                        targetInput.getWindowToken(),
-                        0
-                );
+                imm.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
             }
 
-            targetInput.clearFocus();
 
         } catch (Exception ignored) {
         }
