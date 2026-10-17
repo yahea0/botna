@@ -20,6 +20,7 @@ public final class BotnaStore {
 
     private static final String KEY_SCRIPTS = "scripts_v1";
     private static final String KEY_ACTIVE_SCRIPT = "active_script_v1";
+    private static final String KEY_IMAGE_LIBRARY = "image_library_v1";
 
     private BotnaStore() {
     }
@@ -42,6 +43,18 @@ public final class BotnaStore {
                 .edit()
                 .putString(KEY_SCRIPTS, scripts.toString())
                 .commit();
+    }
+
+    /** Images owned by the custom-step library, separate from per-step targets. */
+    public static JSONArray imageLibrary(Context context) {
+        String raw = prefs(context).getString(KEY_IMAGE_LIBRARY, "[]");
+        try { return new JSONArray(raw); }
+        catch (JSONException e) { return new JSONArray(); }
+    }
+
+    public static void saveImageLibrary(Context context, JSONArray library) {
+        prefs(context).edit().putString(KEY_IMAGE_LIBRARY,
+                library == null ? "[]" : library.toString()).commit();
     }
 
     public static String activeId(Context context) {
