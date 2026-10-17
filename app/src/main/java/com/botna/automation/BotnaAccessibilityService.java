@@ -5,6 +5,10 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import android.app.AlertDialog;
 import android.content.ClipData;
+import android.content.Intent;
+import android.net.Uri;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.content.ClipboardManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -29,6 +33,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -36,6 +41,8 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -43,6 +50,9 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -78,6 +88,14 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private static final String TYPE_REPEAT_START = "REPEAT_START";
     private static final String TYPE_REPEAT_END = "REPEAT_END";
     private static final String TYPE_CUSTOM = "CUSTOM";
+    private static final String TYPE_LAUNCH_APP = "LAUNCH_APP";
+    private static final String TYPE_OPEN_URL = "OPEN_URL";
+    private static final String TYPE_CHECK_INTERNET = "CHECK_INTERNET";
+    private static final String TYPE_WAIT_INTERNET = "WAIT_INTERNET";
+    private static final String TYPE_NOTIFY = "NOTIFY";
+    private static final String TYPE_PRESS_ENTER = "PRESS_ENTER";
+    private static final String TYPE_WAIT_TEXT = "WAIT_TEXT";
+    private static final String TYPE_WAIT_INPUT = "WAIT_INPUT";
 
     private static final int CROP_TARGET = 0;
     private static final int CROP_SEARCH_REGION = 1;
@@ -87,11 +105,14 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService matcherExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private WindowManager.LayoutParams runControlsParams;
     private WindowManager wm;
     private View bubble;
     private View panel;
     private View runControls;
+    private TextView runStatusView;
+    private WindowManager.LayoutParams runStatusParams;
     private ScrollView panelScrollView;
     private CropSelector cropSelector;
     private PointSelector pointSelector;
@@ -142,16 +163,18 @@ public class BotnaAccessibilityService extends AccessibilityService {
     @Override public void onDestroy() {
         removeView(panel);
         removeView(runControls);
+        removeView(runStatusView);
         removeView(cropSelector);
         removeView(pointSelector);
         removeView(bubble);
-        panel = null; runControls = null; cropSelector = null; pointSelector = null; bubble = null;
+        panel = null; runControls = null; runStatusView = null; cropSelector = null; pointSelector = null; bubble = null;
         panelVisible = false;
         running = false; paused = false; executionGeneration++;
         currentBranches.clear(); currentLoops.clear();
         try { BotnaStore.saveScripts(this, BotnaStore.scripts(this)); } catch (Exception ignored) { }
         matcherExecutor.shutdownNow();
         aiExecutor.shutdownNow();
+        networkExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -408,9 +431,61 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout.LayoutParams add7Lp = wrap(); add7Lp.topMargin = dp(5); content.addView(addRow7, add7Lp);
 
         LinearLayout addRow8 = horizontal();
+        addButton(addRow8, "فتح تطبيق", () -> promptText("اسم التطبيق المثبت الذي تريد فتحه", "", appName -> {
+            if (appName.trim().isEmpty()) { report("اكتب اسم التطبيق أولًا."); return; }
+            JSONObject step = addStep(TYPE_LAUNCH_APP, "فتح تطبيق: " + appName.trim());
+            putString(step, "appName", appName.trim());
+            saveStepObject(step); rebuildPanel();
+        }));
         addButton(addRow8, "＋ خطوة مخصصة", this::addCustomStep);
         addButton(addRow8, "مكتبة الصور", this::showImageLibrary);
         LinearLayout.LayoutParams add8Lp = wrap(); add8Lp.topMargin = dp(5); content.addView(addRow8, add8Lp);
+
+        // Network diagnostics and recovery primitives are explicit script steps;
+        // they never change Wi-Fi/router settings by themselves.
+        LinearLayout addRow9 = horizontal();
+        addButton(addRow9, "فحص الإنترنت", () -> promptText("عدد المحاولات والفاصل بالمللي ثانية (مثال 3,5000)", "3,5000", value -> {
+            try {
+                String[] parts = value.split(","); if (parts.length != 2) throw new NumberFormatException();
+                int attempts = Math.max(1, Math.min(20, Integer.parseInt(parts[0].trim())));
+                int interval = Math.max(250, Math.min(60000, Integer.parseInt(parts[1].trim())));
+                JSONObject step = addStep(TYPE_CHECK_INTERNET, "فحص اتصال الإنترنت ×" + attempts);
+                putInt(step, "attempts", attempts); putInt(step, "intervalMs", interval); putInt(step, "timeoutMs", 4000);
+                saveStepObject(step); rebuildPanel();
+            } catch (NumberFormatException ex) { report("اكتب عدد المحاولات والفاصل هكذا: 3,5000"); }
+        }));
+        addButton(addRow9, "انتظار عودة الإنترنت", () -> promptText("الحد الأقصى للمحاولات والفاصل بالمللي ثانية", "120,5000", value -> {
+            try {
+                String[] parts = value.split(","); if (parts.length != 2) throw new NumberFormatException();
+                int attempts = Math.max(1, Math.min(720, Integer.parseInt(parts[0].trim())));
+                int interval = Math.max(500, Math.min(60000, Integer.parseInt(parts[1].trim())));
+                JSONObject step = addStep(TYPE_WAIT_INTERNET, "انتظار عودة الإنترنت");
+                putInt(step, "attempts", attempts); putInt(step, "intervalMs", interval); putInt(step, "timeoutMs", 4000);
+                saveStepObject(step); rebuildPanel();
+            } catch (NumberFormatException ex) { report("اكتب المحاولات والفاصل، مثال 120,5000"); }
+        }));
+        addButton(addRow9, "فتح رابط", () -> promptText("رابط HTTP/HTTPS (مثل صفحة الراوتر)", "http://192.168.1.1", value -> {
+            if (!value.trim().startsWith("http://") && !value.trim().startsWith("https://")) { report("يسمح فقط بروابط HTTP أو HTTPS."); return; }
+            JSONObject step = addStep(TYPE_OPEN_URL, "فتح رابط: " + value.trim()); putString(step, "url", value.trim());
+            saveStepObject(step); rebuildPanel();
+        }));
+        LinearLayout.LayoutParams add9Lp = wrap(); add9Lp.topMargin = dp(5); content.addView(addRow9, add9Lp);
+
+        LinearLayout addRow10 = horizontal();
+        addButton(addRow10, "تنبيه مع نغمة", () -> promptText("نص الرسالة التي ستظهر عند الوصول لهذه الخطوة", "تم تنفيذ الأمر بنجاح", value -> {
+            JSONObject step = addStep(TYPE_NOTIFY, "تنبيه: " + value); putString(step, "message", value); putBoolean(step, "sound", true);
+            saveStepObject(step); rebuildPanel();
+        }));
+        addButton(addRow10, "ضغط Enter/بحث", () -> { JSONObject step = addStep(TYPE_PRESS_ENTER, "تنفيذ أمر Enter/بحث"); saveStepObject(step); rebuildPanel(); });
+        addButton(addRow10, "انتظار ظهور نص", () -> promptText("النص الذي يجب أن يظهر على الشاشة", "بحث", target -> {
+            if (target.trim().isEmpty()) { report("اكتب النص المنتظر."); return; }
+            JSONObject step = addStep(TYPE_WAIT_TEXT, "انتظار ظهور النص: " + target.trim()); putString(step, "value", target.trim()); putInt(step, "attempts", 20); putInt(step, "intervalMs", 500);
+            saveStepObject(step); rebuildPanel();
+        }));
+        LinearLayout.LayoutParams add10Lp = wrap(); add10Lp.topMargin = dp(5); content.addView(addRow10, add10Lp);
+        LinearLayout addRow11 = horizontal();
+        addButton(addRow11, "انتظار حقل إدخال", () -> { JSONObject step=addStep(TYPE_WAIT_INPUT,"انتظار ظهور حقل إدخال قابل للكتابة"); putInt(step,"attempts",20); putInt(step,"intervalMs",500); saveStepObject(step); rebuildPanel(); });
+        LinearLayout.LayoutParams add11Lp = wrap(); add11Lp.topMargin = dp(5); content.addView(addRow11, add11Lp);
 
         LinearLayout runRow = horizontal();
         Button run = button("▶ تشغيل", true);
@@ -799,6 +874,63 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 else if(choice==2) promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,value->saveStepInt(script,step,"afterDelay",value));
                 else if(choice==3)testStep(index); else if(choice==4)toggleStep(script,step); else confirmDeleteStep(index);
             });
+        } else if (TYPE_LAUNCH_APP.equals(type)) {
+            showChoice("إعدادات فتح التطبيق", new String[]{"تغيير اسم التطبيق", "اختبار فتح التطبيق الآن", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) promptText("اسم التطبيق أو اسم الحزمة", step.optString("appName", ""), value -> {
+                    if (value.trim().isEmpty()) { report("اسم التطبيق لا يمكن أن يكون فارغًا."); return; }
+                    putString(step, "appName", value.trim()); putString(step, "label", "فتح تطبيق: " + value.trim());
+                    BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+                });
+                else if (choice == 1) testStep(index);
+                else if (choice == 2) promptNumber("انتظار قبل التنفيذ (مللي ثانية)", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
+                else if (choice == 3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
+                else if (choice == 4) toggleStep(script, step);
+                else confirmDeleteStep(index);
+            });
+        } else if (TYPE_CHECK_INTERNET.equals(type) || TYPE_WAIT_INTERNET.equals(type)) {
+            showChoice("إعدادات فحص الإنترنت", new String[]{"عدد المحاولات", "الفاصل بين المحاولات", "رابط اختبار مخصص", "اختبار اتصال واحد الآن", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) promptNumber("عدد المحاولات", step.optInt("attempts", TYPE_WAIT_INTERNET.equals(type) ? 120 : 3), 1, TYPE_WAIT_INTERNET.equals(type) ? 720 : 20, value -> saveStepInt(script, step, "attempts", value));
+                else if (choice == 1) promptNumber("الفاصل بين المحاولات بالمللي ثانية", step.optInt("intervalMs", 5000), 250, 60000, value -> saveStepInt(script, step, "intervalMs", value));
+                else if (choice == 2) promptText("رابط اختبار HTTP/HTTPS؛ اتركه فارغًا لاستخدام فحص اتصال الإنترنت الافتراضي", step.optString("testUrl", ""), value -> {
+                    String url = value.trim(); if (!url.isEmpty() && !url.startsWith("http://") && !url.startsWith("https://")) { report("يجب أن يبدأ الرابط بـ http:// أو https://"); return; }
+                    if (url.isEmpty()) step.remove("testUrl"); else putString(step, "testUrl", url); BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+                });
+                else if (choice == 3) { probeInternetAsync(step.optString("testUrl", ""), step.optInt("timeoutMs", 4000), ok -> report(ok ? "نجح اختبار اتصال الإنترنت." : "لم يثبت اتصال الإنترنت. تحقق من الشبكة أو صفحة تسجيل الدخول.")); }
+                else if (choice == 4) toggleStep(script, step); else confirmDeleteStep(index);
+            });
+        } else if (TYPE_WAIT_TEXT.equals(type) || TYPE_WAIT_INPUT.equals(type)) {
+            showChoice(TYPE_WAIT_INPUT.equals(type) ? "إعدادات انتظار حقل الإدخال" : "إعدادات انتظار النص", TYPE_WAIT_INPUT.equals(type)
+                    ? new String[]{"عدد المحاولات", "الفاصل بين المحاولات", "اختبار الآن", "تفعيل/تعطيل", "حذف"}
+                    : new String[]{"تغيير النص المنتظر", "عدد المحاولات", "الفاصل بين المحاولات", "اختبار الآن", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(TYPE_WAIT_INPUT.equals(type) && choice==0) promptNumber("عدد المحاولات",step.optInt("attempts",20),1,720,v->saveStepInt(script,step,"attempts",v));
+                else if(TYPE_WAIT_INPUT.equals(type) && choice==1) promptNumber("الفاصل بالمللي ثانية",step.optInt("intervalMs",500),250,60000,v->saveStepInt(script,step,"intervalMs",v));
+                else if(TYPE_WAIT_INPUT.equals(type) && choice==2) { boolean found=hasEditableInputOnScreen(); report(found?"ظهر حقل إدخال قابل للكتابة.":"لم يظهر حقل إدخال قابل للكتابة."); }
+                else if(TYPE_WAIT_INPUT.equals(type) && choice==3) toggleStep(script,step);
+                else if(TYPE_WAIT_INPUT.equals(type) && choice==4) confirmDeleteStep(index);
+                else if(!TYPE_WAIT_INPUT.equals(type) && choice==0) promptText("النص المنتظر",step.optString("value",""),v->{putString(step,"value",v);putString(step,"label","انتظار ظهور النص: "+v);BotnaStore.saveSteps(this,script,steps);rebuildPanel();});
+                else if(!TYPE_WAIT_INPUT.equals(type) && choice==1) promptNumber("عدد المحاولات",step.optInt("attempts",20),1,720,v->saveStepInt(script,step,"attempts",v));
+                else if(!TYPE_WAIT_INPUT.equals(type) && choice==2) promptNumber("الفاصل بالمللي ثانية",step.optInt("intervalMs",500),250,60000,v->saveStepInt(script,step,"intervalMs",v));
+                else if(!TYPE_WAIT_INPUT.equals(type) && choice==3) { boolean found=containsTextOnScreen(step.optString("value","")); report(found?"النص المنتظر ظاهر حاليًا.":"لم يظهر النص المنتظر في شجرة إمكانية الوصول."); }
+                else if(!TYPE_WAIT_INPUT.equals(type) && choice==4) toggleStep(script,step); else if(!TYPE_WAIT_INPUT.equals(type) && choice==5) confirmDeleteStep(index);
+            });
+        } else if (TYPE_OPEN_URL.equals(type)) {
+            showChoice("إعدادات فتح الرابط", new String[]{"تغيير الرابط", "فتح الرابط الآن", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) promptText("رابط HTTP/HTTPS", step.optString("url", "https://example.com"), value -> {
+                    String url=value.trim(); if(!url.startsWith("http://")&&!url.startsWith("https://")){report("يجب أن يبدأ الرابط بـ http:// أو https://");return;} putString(step,"url",url);putString(step,"label","فتح رابط: "+url);BotnaStore.saveSteps(this,script,steps);rebuildPanel();
+                }); else if(choice==1) { boolean ok=openHttpUrl(step.optString("url","")); report(ok?"تم فتح الرابط في تطبيق خارجي.":"تعذر فتح الرابط؛ تحقق من صحته ووجود متصفح."); }
+                else if(choice==2) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,v->saveStepInt(script,step,"beforeDelay",v));
+                else if(choice==3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,v->saveStepInt(script,step,"afterDelay",v));
+                else if(choice==4) toggleStep(script,step); else confirmDeleteStep(index);
+            });
+        } else if (TYPE_NOTIFY.equals(type)) {
+            showChoice("إعدادات التنبيه", new String[]{"تعديل نص الرسالة", "تشغيل/إيقاف النغمة", "اختبار التنبيه", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(choice==0) promptText("رسالة التنبيه",step.optString("message","تم تنفيذ الأمر بنجاح"),v->{putString(step,"message",v);putString(step,"label","تنبيه: "+v);BotnaStore.saveSteps(this,script,steps);rebuildPanel();});
+                else if(choice==1){putBoolean(step,"sound",!step.optBoolean("sound",true));BotnaStore.saveSteps(this,script,steps);rebuildPanel();}
+                else if(choice==2){notifyUser(step.optString("message","تم تنفيذ الأمر بنجاح"),step.optBoolean("sound",true));report("تم اختبار التنبيه.");}
+                else if(choice==3)toggleStep(script,step);else confirmDeleteStep(index);
+            });
+        } else if (TYPE_PRESS_ENTER.equals(type)) {
+            showChoice("إعدادات Enter/بحث", new String[]{"اختبار الآن", "تفعيل/تعطيل", "حذف"}, choice -> { if(choice==0){boolean ok=performImeEnter();report(ok?"تم إرسال أمر Enter/بحث.":"لم يقبل حقل الإدخال أمر Enter. جرّب خطوة نقر على زر بحث ظاهر.");}else if(choice==1)toggleStep(script,step);else confirmDeleteStep(index); });
         } else if (TYPE_BACK.equals(type) || TYPE_HOME.equals(type)) {
             showChoice("إعدادات خطوة النظام", new String[]{"انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
                 if(choice==0) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,value->saveStepInt(script,step,"beforeDelay",value));
@@ -1086,6 +1218,19 @@ public class BotnaAccessibilityService extends AccessibilityService {
         input.setHint("مثال: تابع صورة رقم 4 بالمكتبة، إذا وجدتها انتظر ثانيتين ثم ارجع");
         input.setBackground(glassShape(Color.rgb(8, 14, 22), CYAN, 1, 12));
         content.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox includeScreenContext = new CheckBox(this);
+        includeScreenContext.setText("إرفاق لقطة الشاشة الحالية للمترجم البصري");
+        includeScreenContext.setTextColor(MUTED);
+        includeScreenContext.setTextSize(12);
+        includeScreenContext.setButtonTintList(android.content.res.ColorStateList.valueOf(CYAN));
+        includeScreenContext.setChecked(true);
+        LinearLayout.LayoutParams visionLp = wrap(); visionLp.topMargin = dp(3);
+        content.addView(includeScreenContext, visionLp);
+        TextView visionPrivacy = label("عند التفعيل، تُرسل لقطة الشاشة إلى مزوّد الذكاء الاصطناعي عبر الإنترنت. أوقفه في الشاشات الحساسة.", 10, MUTED, false);
+        LinearLayout.LayoutParams visionPrivacyLp = wrap(); visionPrivacyLp.topMargin = dp(1);
+        content.addView(visionPrivacy, visionPrivacyLp);
+        // The app temporarily hides Botna overlays before taking this screenshot.
+        // The provider may reject images if the selected model is text-only.
         // Save the draft while the user types. The previous translation is cleared immediately
         // after the debounce so stale executable instructions can never run against new text.
         input.addTextChangedListener(new TextWatcher() {
@@ -1106,8 +1251,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         });
 
         TextView aiStatus = label(BotnaAICompiler.isConfigured(this)
-                ? "المترجم الذكي متصل بالإعدادات (يتطلب إنترنت وقد يستهلك رصيد API)."
-                : "المترجم المحلي متاح. لإعادة صياغة الأوامر المعقدة فعّل مزوّد AI بمفتاح API.", 12, MUTED, false);
+                ? "المزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this)) + " — متاح للتحليل عبر الإنترنت."
+                : "المحلّل المحلي متاح. لفهم الأوامر المركبة استخدم مزوّد API مضبوطًا من الإعدادات.", 12, MUTED, false);
         LinearLayout.LayoutParams statusLp = wrap(); statusLp.topMargin = dp(8); content.addView(aiStatus, statusLp);
         LinearLayout buttons = horizontal();
         Button settings = button("⚙ إعدادات AI", false);
@@ -1158,80 +1303,115 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 report("جارٍ تحليل الأمر وحفظ نصه الأصلي…");
                 JSONArray librarySnapshot = BotnaStore.imageLibrary(this);
                 boolean useAI = BotnaAICompiler.isConfigured(this);
-                try {
-                    aiExecutor.execute(() -> {
-                        JSONArray compiled = new JSONArray();
-                        List<String> warnings = new ArrayList<>();
-                        String source = useAI ? "ai" : "local";
-                        String aiFailure = "";
-                        if (useAI) {
-                            try {
-                                JSONObject plan = BotnaAICompiler.compile(this, command, librarySnapshot);
-                                compiled = compileAIPlan(plan, librarySnapshot, warnings);
-                                if (compiled.length() == 0) throw new IllegalStateException("الخطة لم تحتوِ أوامر مدعومة.");
-                                JSONArray aiWarnings = plan.optJSONArray("warnings");
-                                if (aiWarnings != null) for (int i = 0; i < aiWarnings.length(); i++) {
-                                    String warning = aiWarnings.optString(i, "").trim(); if (!warning.isEmpty()) warnings.add(warning);
-                                }
-                                String structure = validateScriptStructure(compiled);
-                                if (structure != null) throw new IllegalStateException("بنية الخطة غير صالحة: " + structure);
-                            } catch (Exception e) {
-                                aiFailure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                                compiled = new JSONArray(); warnings.clear();
-                            }
+                if (useAI && includeScreenContext.isChecked()) {
+                    final boolean restorePanel = panelVisible;
+                    report("جارٍ إخفاء واجهة Botna مؤقتًا لقراءة الشاشة الحالية…");
+                    dialog.hide();
+                    hidePanel();
+                    removeView(bubble); bubble = null;
+                    handler.postDelayed(() -> takeScreenshot((screen, error) -> {
+                        if (restorePanel) showPanel(); else showBubble();
+                        dialog.show();
+                        if (screen == null) {
+                            report("تعذر التقاط الشاشة للسياق البصري؛ ستُحلّل التعليمات نصيًا: " + error);
+                        } else {
+                            report("تم التقاط الشاشة. جارٍ تحليل الأمر مع السياق البصري…");
                         }
-                        if (compiled.length() == 0) {
-                            try {
-                                compiled = compileCustomInstructions(command, warnings);
-                                String localStructureError = validateScriptStructure(compiled);
-                                if (localStructureError != null) {
-                                    warnings.add("لم تُحفظ الخطة للتنفيذ لأن تركيب الشروط/التكرار غير صحيح: " + localStructureError);
-                                    compiled = new JSONArray();
-                                }
-                                source = "local";
-                                if (useAI && !aiFailure.isEmpty()) warnings.add("تعذر استخدام AI؛ استُخدم المحلّل المحلي كبديل: " + aiFailure);
-                                else if (!useAI) warnings.add("تم استخدام المحلّل المحلي. للأوامر الحرة والمعقدة، اضبط مفتاح API في إعدادات AI.");
-                            } catch (Exception e) {
-                                warnings.add("تعذر التحليل المحلي: " + e.getClass().getSimpleName());
-                            }
-                        }
-                        JSONArray finalCompiled = compiled;
-                        List<String> finalWarnings = new ArrayList<>(warnings);
-                        String finalSource = source;
-                        String finalAiFailure = aiFailure;
-                        handler.post(() -> {
-                            JSONObject targetScript = BotnaStore.getScript(this, scriptId);
-                            JSONObject target = findStepById(targetScript, stepId);
-                            if (targetScript == null || target == null) { report("تم حفظ النص، لكن تعذر العثور على السكربت أو الخطوة لإكمال الترجمة."); dialog.dismiss(); rebuildPanel(); return; }
-                            putString(target, "instructions", command);
-                            try {
-                                target.put("compiledSteps", finalCompiled);
-                                JSONArray wa = new JSONArray(); for (String warning : finalWarnings) wa.put(warning);
-                                target.put("compileWarnings", wa);
-                            } catch (JSONException ignored) { }
-                            if (finalCompiled.length() == 0) {
-                                putString(target, "label", "خطوة مخصصة — نص محفوظ، يحتاج ترجمة");
-                                BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
-                                dialog.dismiss(); rebuildPanel();
-                                report("حُفظ النص الأصلي كمسودة ولم يُحذف. لم ينتج التحليل خطوات آمنة قابلة للتنفيذ؛ راجع المكتبة أو إعدادات AI. " + (finalAiFailure.isEmpty() ? "" : "سبب AI: " + finalAiFailure));
-                                return;
-                            }
-                            putString(target, "label", "خطوة مخصصة • " + finalCompiled.length() + " أمر");
-                            BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
-                            dialog.dismiss(); rebuildPanel();
-                            StringBuilder message = new StringBuilder("تم حفظ النص وترجمته إلى ").append(finalCompiled.length()).append(" أمرًا.");
-                            if (!finalWarnings.isEmpty()) message.append(" توجد ").append(finalWarnings.size()).append(" تنبيهات؛ افتح معاينة الترجمة.");
-                            if ("local".equals(finalSource)) message.append(" (المحلّل المحلي)");
-                            report(message.toString());
-                            previewCustomCompilation(target);
-                        });
-                    });
-                } catch (Exception e) {
-                    saveButton.setEnabled(true); saveButton.setText("تحليل وحفظ");
-                    report("تعذر بدء التحليل. تم الاحتفاظ بالنص الأصلي.");
+                        compileCustomInstructionsAsync(command, scriptId, stepId, librarySnapshot, useAI, saveButton, dialog, screen);
+                    }), 240);
+                } else {
+                    compileCustomInstructionsAsync(command, scriptId, stepId, librarySnapshot, useAI, saveButton, dialog, null);
                 }
             });
         } catch (Exception e) { report("تعذر فتح محرر الخطوة المخصصة."); }
+    }
+
+    private void compileCustomInstructionsAsync(String command, String scriptId, String stepId,
+                                                JSONArray librarySnapshot, boolean useAI,
+                                                Button saveButton, AlertDialog dialog, Bitmap screenContext) {
+        try {
+            aiExecutor.execute(() -> {
+                JSONArray compiled = new JSONArray();
+                List<String> warnings = new ArrayList<>();
+                String source = useAI ? "ai" : "local";
+                String aiFailure = "";
+                try {
+                    if (useAI) {
+                        try {
+                            JSONObject plan = BotnaAICompiler.compile(this, command, librarySnapshot, screenContext);
+                            compiled = compileAIPlan(plan, librarySnapshot, warnings);
+                            if (compiled.length() == 0) throw new IllegalStateException("الخطة لم تحتوِ أوامر مدعومة.");
+                            JSONArray aiWarnings = plan.optJSONArray("warnings");
+                            if (aiWarnings != null) for (int i = 0; i < aiWarnings.length(); i++) {
+                                String warning = aiWarnings.optString(i, "").trim();
+                                if (!warning.isEmpty()) warnings.add(warning);
+                            }
+                            String structure = validateScriptStructure(compiled);
+                            if (structure != null) throw new IllegalStateException("بنية الخطة غير صالحة: " + structure);
+                        } catch (Exception e) {
+                            aiFailure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                            compiled = new JSONArray(); warnings.clear();
+                        }
+                    }
+                    if (compiled.length() == 0) {
+                        try {
+                            compiled = compileCustomInstructions(command, warnings);
+                            String localStructureError = validateScriptStructure(compiled);
+                            if (localStructureError != null) {
+                                warnings.add("لم تُحفظ الخطة للتنفيذ لأن تركيب الشروط/التكرار غير صحيح: " + localStructureError);
+                                compiled = new JSONArray();
+                            }
+                            source = "local";
+                            if (useAI && !aiFailure.isEmpty()) warnings.add("تعذر استخدام AI؛ استُخدم المحلّل المحلي كبديل: " + aiFailure);
+                            else if (!useAI) warnings.add("تم استخدام المحلّل المحلي. للأوامر الحرة والمعقدة، اضبط مزوّد AI في الإعدادات.");
+                        } catch (Exception e) {
+                            warnings.add("تعذر التحليل المحلي: " + e.getClass().getSimpleName());
+                        }
+                    }
+                    JSONArray finalCompiled = compiled;
+                    List<String> finalWarnings = new ArrayList<>(warnings);
+                    String finalSource = source;
+                    String finalAiFailure = aiFailure;
+                    handler.post(() -> {
+                        JSONObject targetScript = BotnaStore.getScript(this, scriptId);
+                        JSONObject target = findStepById(targetScript, stepId);
+                        if (targetScript == null || target == null) {
+                            report("تم حفظ النص، لكن تعذر العثور على السكربت أو الخطوة لإكمال الترجمة.");
+                            dialog.dismiss(); rebuildPanel(); return;
+                        }
+                        putString(target, "instructions", command);
+                        try {
+                            target.put("compiledSteps", finalCompiled);
+                            JSONArray wa = new JSONArray(); for (String warning : finalWarnings) wa.put(warning);
+                            target.put("compileWarnings", wa);
+                            target.put("compilerProvider", "ai".equals(finalSource) ? BotnaAICompiler.providerId(this) : "local");
+                            target.put("compiledAt", System.currentTimeMillis());
+                        } catch (JSONException ignored) { }
+                        if (finalCompiled.length() == 0) {
+                            putString(target, "label", "خطوة مخصصة — نص محفوظ، يحتاج ترجمة");
+                            BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
+                            dialog.dismiss(); rebuildPanel();
+                            report("حُفظ النص الأصلي كمسودة ولم ينتج التحليل خطوات آمنة قابلة للتنفيذ. " + (finalAiFailure.isEmpty() ? "" : "سبب AI: " + finalAiFailure));
+                            return;
+                        }
+                        putString(target, "label", "خطوة مخصصة • " + finalCompiled.length() + " أمر");
+                        BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
+                        dialog.dismiss(); rebuildPanel();
+                        StringBuilder message = new StringBuilder("تم حفظ النص وترجمته إلى ").append(finalCompiled.length()).append(" أمرًا.");
+                        if (!finalWarnings.isEmpty()) message.append(" توجد ").append(finalWarnings.size()).append(" تنبيهات؛ افتح معاينة الترجمة.");
+                        if ("local".equals(finalSource)) message.append(" (المحلّل المحلي)");
+                        report(message.toString());
+                        previewCustomCompilation(target);
+                    });
+                } finally {
+                    if (screenContext != null && !screenContext.isRecycled()) screenContext.recycle();
+                }
+            });
+        } catch (Exception e) {
+            if (screenContext != null && !screenContext.isRecycled()) screenContext.recycle();
+            saveButton.setEnabled(true); saveButton.setText("تحليل وحفظ");
+            report("تعذر بدء التحليل. تم الاحتفاظ بالنص الأصلي.");
+        }
     }
 
     private String customDraftPreferenceKey(String scriptId, String stepId) {
@@ -1294,6 +1474,61 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     }
                     break;
                 }
+                case "launch_app":
+                case "open_app":
+                case "start_app":
+                case "search_app": {
+                    String appName = action.optString("app_name", action.optString("app", "")).trim();
+                    if (appName.isEmpty()) { warnings.add("الخطوة " + (i + 1) + ": لم يذكر النموذج اسم التطبيق المراد فتحه."); continue; }
+                    step = compiledStep(TYPE_LAUNCH_APP, "فتح تطبيق: " + appName); putString(step, "appName", appName); output.put(step); break;
+                }
+                case "open_url":
+                case "open_link": {
+                    String url = action.optString("url", action.optString("text", "")).trim();
+                    if (!(url.startsWith("https://") || url.startsWith("http://"))) { warnings.add("الخطوة " + (i + 1) + ": تم تجاهل رابط غير HTTP/HTTPS."); continue; }
+                    step = compiledStep(TYPE_OPEN_URL, "فتح الرابط: " + url); putString(step, "url", url); output.put(step); break;
+                }
+                case "check_internet": {
+                    int attempts = clampInt(action.optInt("attempts", 3), 1, 20);
+                    int interval = clampInt(action.optInt("interval_ms", 5000), 250, 60000);
+                    int timeout = clampInt(action.optInt("timeout_ms", 4000), 1000, 12000);
+                    step = compiledStep(TYPE_CHECK_INTERNET, "فحص الإنترنت ×" + attempts); putInt(step, "attempts", attempts); putInt(step, "intervalMs", interval); putInt(step, "timeoutMs", timeout);
+                    String url = action.optString("url", "").trim(); if (!url.isEmpty() && (url.startsWith("https://") || url.startsWith("http://"))) putString(step, "testUrl", url);
+                    output.put(step); break;
+                }
+                case "wait_for_internet":
+                case "wait_until_online": {
+                    int attempts = clampInt(action.optInt("max_attempts", action.optInt("attempts", 120)), 1, 720);
+                    int interval = clampInt(action.optInt("interval_ms", 5000), 500, 60000);
+                    int timeout = clampInt(action.optInt("timeout_ms", 4000), 1000, 12000);
+                    step = compiledStep(TYPE_WAIT_INTERNET, "انتظار عودة الإنترنت حتى " + (attempts * interval / 1000) + " ثانية"); putInt(step, "attempts", attempts); putInt(step, "intervalMs", interval); putInt(step, "timeoutMs", timeout);
+                    putBoolean(step, "notifyOnSuccess", action.optBoolean("notify_on_success", false));
+                    putString(step, "successMessage", action.optString("success_message", "عاد الإنترنت بنجاح"));
+                    String url = action.optString("url", "").trim(); if (!url.isEmpty() && (url.startsWith("https://") || url.startsWith("http://"))) putString(step, "testUrl", url);
+                    output.put(step); break;
+                }
+                case "notify":
+                case "alert": {
+                    String message = action.optString("message", "تم تنفيذ الأمر بنجاح").trim();
+                    step = compiledStep(TYPE_NOTIFY, "تنبيه: " + message); putString(step, "message", message); putBoolean(step, "sound", action.optBoolean("sound", true)); output.put(step); break;
+                }
+                case "wait_for_input":
+                case "wait_for_editable_field": {
+                    int attempts = clampInt(action.optInt("max_attempts", action.optInt("attempts", 20)), 1, 720);
+                    int interval = clampInt(action.optInt("interval_ms", 500), 250, 60000);
+                    step = compiledStep(TYPE_WAIT_INPUT, "انتظار ظهور حقل إدخال قابل للكتابة"); putInt(step,"attempts",attempts); putInt(step,"intervalMs",interval); output.put(step); break;
+                }
+                case "wait_for_text":
+                case "wait_until_text": {
+                    String value = action.optString("text", "").trim();
+                    if (value.isEmpty()) { warnings.add("الخطوة " + (i + 1) + ": نص الانتظار فارغ."); continue; }
+                    int attempts = clampInt(action.optInt("max_attempts", action.optInt("attempts", 20)), 1, 720);
+                    int interval = clampInt(action.optInt("interval_ms", 500), 250, 60000);
+                    step = compiledStep(TYPE_WAIT_TEXT, "انتظار ظهور النص: " + value); putString(step,"value",value); putInt(step,"attempts",attempts); putInt(step,"intervalMs",interval); output.put(step); break;
+                }
+                case "press_enter":
+                case "press_search":
+                case "ime_enter": addCompiled(output, TYPE_PRESS_ENTER, "تنفيذ Enter/بحث"); break;
                 case "wait": {
                     int delay = clampInt(action.optInt("delay_ms", action.optInt("delay", 500)), 0, 60000);
                     step = compiledStep(TYPE_WAIT, "انتظار " + delay + " ms"); putInt(step, "delay", delay); output.put(step); break;
@@ -1452,9 +1687,41 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void parseCustomAction(String norm, JSONArray result, List<String> warnings, JSONArray library) {
         if (norm == null || norm.trim().isEmpty()) return;
         if (norm.contains("نهاية الشرط") || norm.contains("نهاية التكرار")) { warnings.add("استخدم علامة نهاية الشرط/التكرار في سطر مستقل: "+norm); return; }
+        if ((norm.contains("حقل الادخال") || norm.contains("حقل البحث") || norm.contains("مكان الكتابة") || norm.contains("خانة البحث"))
+                && (norm.contains("انتظر") || norm.contains("استنى") || norm.contains("حتى يظهر") || norm.contains("ظهور"))) {
+            JSONObject st=compiledStep(TYPE_WAIT_INPUT,"انتظار ظهور حقل إدخال قابل للكتابة"); putInt(st,"attempts",20); putInt(st,"intervalMs",500); result.put(st); return;
+        }
+        java.util.regex.Matcher waitText = java.util.regex.Pattern.compile("(?iu)^(?:انتظر|استنى|استنّى|انتظر حتى)\\s+(?:ظهور|يظهر|حتى يظهر)?\\s*(?:النص|عبارة)?\\s*[:：]?\\s*(.+?)\\s*$").matcher(norm);
+        if (waitText.matches() && (norm.contains("ظهور") || norm.contains("النص") || norm.contains("عبارة") || norm.contains("حتى يظهر"))) {
+            String value=waitText.group(1).trim().replace("«", "").replace("»", "").replace("\"", "");
+            if (!value.isEmpty() && !value.contains("انترنت") && !value.contains("الانترنت") && !value.contains("حقل الادخال")) { JSONObject st=compiledStep(TYPE_WAIT_TEXT,"انتظار ظهور النص: "+value); putString(st,"value",value); putInt(st,"attempts",20); putInt(st,"intervalMs",500); result.put(st); return; }
+        }
+        if (norm.contains("فحص الانترنت") || norm.contains("افحص الانترنت") || norm.contains("اختبر الاتصال") || norm.contains("اختبر الانترنت")) {
+            JSONObject st = compiledStep(TYPE_CHECK_INTERNET, "فحص اتصال الإنترنت"); putInt(st,"attempts",3); putInt(st,"intervalMs",5000); putInt(st,"timeoutMs",4000); result.put(st); return;
+        }
+        if ((norm.contains("انتظر") || norm.contains("استنى") || norm.contains("ضل افحص") || norm.contains("ظل افحص")) && (norm.contains("يعود الانترنت") || norm.contains("يرجع الانترنت") || norm.contains("يتصل بالانترنت") || norm.contains("الانترنت يرجع") || norm.contains("الاتصال يرجع"))) {
+            JSONObject st = compiledStep(TYPE_WAIT_INTERNET, "انتظار عودة الإنترنت"); putInt(st,"attempts",120); putInt(st,"intervalMs",5000); putInt(st,"timeoutMs",4000); result.put(st); return;
+        }
+        if (norm.contains("نبهني") || norm.contains("اظهر رسالة") || norm.contains("أظهر رسالة") || norm.contains("شغل نغمة") || norm.contains("شغل تنبيه") || norm.contains("اعرض رسالة")) {
+            String message = norm.replaceFirst("(?iu)^.*?(?:نبهني|اظهر رسالة|شغل نغمة|شغل تنبيه|اعرض رسالة)\\s*[:：]?\\s*", "").trim();
+            if (message.isEmpty()) message = "تم تنفيذ الأمر بنجاح";
+            JSONObject st=compiledStep(TYPE_NOTIFY,"تنبيه: "+message); putString(st,"message",message); putBoolean(st,"sound",true); result.put(st); return;
+        }
+        if (norm.contains("اضغط انتر") || norm.contains("اضغط enter") || norm.contains("اضغط بحث") || norm.contains("نفذ البحث") || norm.contains("زر البحث")) { addCompiled(result,TYPE_PRESS_ENTER,"تنفيذ Enter/بحث"); return; }
+        java.util.regex.Matcher openUrl = java.util.regex.Pattern.compile("(?iu)^.*?(https?://\\S+).*$").matcher(norm);
+        if (openUrl.matches() && (norm.contains("افتح") || norm.contains("اذهب") || norm.contains("الرابط") || norm.contains("صفحة الراوتر"))) {
+            String url=openUrl.group(1).replaceAll("[،,؛;.)]+$", ""); JSONObject st=compiledStep(TYPE_OPEN_URL,"فتح الرابط: "+url); putString(st,"url",url); result.put(st); return;
+        }
         if (norm.contains("انتظر") || norm.contains("انتظار") || norm.contains("توقف قليلا")) {
             int delay=parseDelayMs(norm);
             addCompiledInt(result,TYPE_WAIT,"انتظار "+delay+" ms","delay",delay); return;
+        }
+        java.util.regex.Matcher openApp = java.util.regex.Pattern.compile("(?iu)^(?:افتح|شغّل|شغل|ادخل على|افتحلي|افتح لي|ابحث عن|دور على|دوّر على)\\s+(?:تطبيق\\s+)?(.+?)\\s*$").matcher(norm);
+        if (openApp.matches() && !norm.contains("الشاشة الرئيسية") && !norm.equals("افتح الرئيسية")) {
+            String appName = openApp.group(1).trim();
+            if (appName.isEmpty()) warnings.add("لم يُذكر اسم التطبيق المراد فتحه.");
+            else { JSONObject st = compiledStep(TYPE_LAUNCH_APP, "فتح تطبيق: " + appName); putString(st, "appName", appName); result.put(st); }
+            return;
         }
         if (norm.contains("الرئيسية") || norm.contains("الشاشة الرئيسية") || norm.equals("home")) { addCompiled(result,TYPE_HOME,"الرئيسية"); return; }
         if (norm.contains("رجوع") || norm.contains("ارجع") || norm.contains("للخلف") || norm.equals("back")) { addCompiled(result,TYPE_BACK,"رجوع"); return; }
@@ -1555,9 +1822,18 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private JSONArray getLibrary() { return BotnaStore.imageLibrary(this); }
+
     private JSONObject findLibraryImage(String id) {
-        JSONArray lib=getLibrary();
-        for(int i=0;i<lib.length();i++) { JSONObject item=lib.optJSONObject(i); if(item!=null && id.equals(item.optString("id"))) return item; }
+        return findLibraryImage(getLibrary(), id);
+    }
+
+    /** Find the object in the very same JSONArray that will be persisted. */
+    private JSONObject findLibraryImage(JSONArray lib, String id) {
+        if (lib == null || id == null || id.isEmpty()) return null;
+        for (int i = 0; i < lib.length(); i++) {
+            JSONObject item = lib.optJSONObject(i);
+            if (item != null && id.equals(item.optString("id"))) return item;
+        }
         return null;
     }
     private void saveLibrary(JSONArray lib) { BotnaStore.saveImageLibrary(this,lib); }
@@ -1573,7 +1849,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         JSONArray lib=getLibrary(); JSONObject item=lib.optJSONObject(index); if(item==null) return;
         String id=item.optString("id");
         showChoice("صورة المكتبة: "+item.optString("name"),new String[]{"تعديل الاسم","نسبة التطابق","إعدادات المطابقة","منطقة البحث","استبدال الصورة","حذف الصورة"},choice->{
-            JSONArray current=getLibrary(); JSONObject currentItem=findLibraryImage(id); if(currentItem==null)return;
+            JSONArray current = getLibrary(); JSONObject currentItem = findLibraryImage(current, id); if (currentItem == null) return;
             if(choice==0) promptText("اسم الصورة",currentItem.optString("name"),name->{putString(currentItem,"name",name.trim());saveLibrary(current);showImageLibrary();});
             else if(choice==1) promptNumber("نسبة التطابق (50–99)",currentItem.optInt("threshold",85),50,99,value->{putInt(currentItem,"threshold",value);saveLibrary(current);report("تم حفظ نسبة التطابق للصورة.");});
             else if(choice==2) editLibraryAdvancedSettings(currentItem);
@@ -1586,8 +1862,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void editLibraryAdvancedSettings(JSONObject item) {
         String id=item.optString("id");
         showChoice("إعدادات صورة المكتبة",new String[]{item.optBoolean("tapOnMatch",true)?"عدم الضغط بعد العثور":"الضغط بعد العثور", "عدد المحاولات", "فاصل المحاولة", "انتظار قبل الخطوة", "انتظار بعد الخطوة"},choice->{
-            JSONObject target=findLibraryImage(id); if(target==null)return;
-            JSONArray lib=getLibrary();
+            JSONArray lib = getLibrary(); JSONObject target = findLibraryImage(lib, id); if (target == null) return;
             if(choice==0){putBoolean(target,"tapOnMatch",!target.optBoolean("tapOnMatch",true));saveLibrary(lib);editLibraryAdvancedSettings(target);}
             else if(choice==1)promptNumber("عدد المحاولات (1–10)",target.optInt("retries",2),1,10,v->{putInt(target,"retries",v);saveLibrary(lib);});
             else if(choice==2)promptNumber("فاصل المحاولة بالمللي ثانية",target.optInt("retryDelay",500),100,10000,v->{putInt(target,"retryDelay",v);saveLibrary(lib);});
@@ -1599,7 +1874,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void editLibrarySearchRegion(JSONObject item) {
         String id=item.optString("id");
         showChoice("منطقة بحث قالب المكتبة",new String[]{"الشاشة الكاملة (افتراضي)","مكان القص الأصلي", "تحديد منطقة مخصصة"},choice->{
-            JSONObject target=findLibraryImage(id); if(target==null)return; JSONArray lib=getLibrary();
+            JSONArray lib = getLibrary(); JSONObject target = findLibraryImage(lib, id); if (target == null) return;
             if(choice==0){putString(target,"searchRegionMode","full");saveLibrary(lib);report("ستبحث صورة المكتبة عبر الشاشة الكاملة.");}
             else if(choice==1){
                 if(!target.has("captureW")){report("لا يوجد موضع قص محفوظ؛ استخدم الشاشة الكاملة أو منطقة مخصصة.");return;}
@@ -1854,13 +2129,14 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
                     report("تم حفظ منطقة بحث مخصصة لهذه الخطوة.");
                 } else {
-                    JSONObject item = findLibraryImage(activeLibraryId);
+                    JSONArray libraryItems = getLibrary();
+                    JSONObject item = findLibraryImage(libraryItems, activeLibraryId);
                     if (item == null) throw new IllegalStateException("لم يتم العثور على صورة المكتبة لتعديل منطقة بحثها");
                     putString(item, "searchRegionMode", "custom");
                     putInt(item, "searchX", leftPct); putInt(item, "searchY", topPct);
                     putInt(item, "searchW", Math.max(1, rightPct - leftPct));
                     putInt(item, "searchH", Math.max(1, bottomPct - topPct));
-                    saveLibrary(getLibrary());
+                    saveLibrary(libraryItems);
                     report("تم حفظ منطقة بحث مخصصة لقالب المكتبة.");
                 }
             } else {
@@ -1892,7 +2168,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     JSONArray libraryItems = BotnaStore.imageLibrary(this);
                     JSONObject image = null;
                     if (!libraryReplaceId.isEmpty()) {
-                        image = findLibraryImage(libraryReplaceId);
+                        image = findLibraryImage(libraryItems, libraryReplaceId);
                         if (image != null) {
                             String oldName = image.optString("fileName", "");
                             if (!oldName.isEmpty() && !oldName.equals(fileName)) {
@@ -2214,15 +2490,48 @@ public class BotnaAccessibilityService extends AccessibilityService {
         currentBranches.clear(); currentLoops.clear();
         singleStepTesting = false; customTestMode = false;
         executionSteps = new JSONArray();
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         report("تم إيقاف التنفيذ نهائيًا.");
         showBubble();
         if (panelWasVisibleAtRunStart) showPanel();
     }
 
+    private void showRunStatus() {
+        if (wm == null || !running || runControlsParams == null) return;
+        removeView(runStatusView); runStatusView = null;
+        String stored = getLastResult();
+        int divider = stored.indexOf(" — ");
+        String message = divider >= 0 ? stored.substring(divider + 3) : stored;
+        if (message.length() > 64) message = message.substring(0, 61) + "…";
+        TextView pill = label(message, 10, TEXT, false);
+        pill.setGravity(Gravity.CENTER);
+        pill.setSingleLine(true);
+        pill.setPadding(dp(7), 0, dp(7), 0);
+        pill.setBackground(glassShape(Color.argb(220, 8, 14, 24), Color.argb(200, 35, 226, 244), 1, 13));
+        int width = Math.max(dp(150), Math.min(dp(280), realScreenMetrics().widthPixels - dp(12)));
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(width, dp(24),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.x = clampInt(runControlsParams.x, 0, Math.max(0, realScreenMetrics().widthPixels - width));
+        params.y = Math.max(0, runControlsParams.y - dp(27));
+        try { wm.addView(pill, params); runStatusView = pill; runStatusParams = params; }
+        catch (Exception ignored) { runStatusView = null; runStatusParams = null; }
+    }
+
+    private void updateRunStatus() {
+        if (!running || runStatusView == null) return;
+        String stored = getLastResult(); int divider = stored.indexOf(" — ");
+        String message = divider >= 0 ? stored.substring(divider + 3) : stored;
+        if (message.length() > 64) message = message.substring(0, 61) + "…";
+        runStatusView.setText(message);
+    }
+
     private void showRunControls() {
         if (wm == null || !running) return;
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -2286,7 +2595,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             }
             return true;
         });
-        try { wm.addView(bar, params); runControls = bar; runControlsParams = params; }
+        try { wm.addView(bar, params); runControls = bar; runControlsParams = params; showRunStatus(); }
         catch (Exception e) { saveResult("تعذر إظهار أزرار التحكم أثناء التشغيل."); }
     }
     private void runStep() {
@@ -2353,6 +2662,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
         if (!activeBefore) { scheduleNext(generation, 0); return; }
 
+        report("الخطوة " + (currentStepIndex + 1) + "/" + steps.length() + " — " + step.optString("label", type));
         executionInFlight = true;
         // Keep controls available during the pre-action delay. Screenshot and
         // gesture helpers hide them only at the moment they would obstruct the action.
@@ -2442,6 +2752,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
             lastStepSuccess = ok;
             report(ok ? "نجحت خطوة النقر على النص: " + step.optString("value") : "فشلت خطوة النقر على النص: " + step.optString("value"));
             scheduleAfterAction(generation, step);
+        } else if (TYPE_LAUNCH_APP.equals(type)) {
+            String appName = step.optString("appName", step.optString("value", "")).trim();
+            boolean ok = launchInstalledApp(appName);
+            lastStepSuccess = ok;
+            report(ok ? "تم فتح التطبيق: " + appName : "تعذر العثور على تطبيق قابل للفتح باسم: " + appName);
+            scheduleAfterAction(generation, step);
         } else if (TYPE_BACK.equals(type)) {
             lastStepSuccess = performGlobalAction(GLOBAL_ACTION_BACK);
             report(lastStepSuccess ? "نجحت خطوة الرجوع." : "فشلت خطوة الرجوع."); scheduleAfterAction(generation, step);
@@ -2487,7 +2803,20 @@ public class BotnaAccessibilityService extends AccessibilityService {
             performSwipe(x1,y1,x2,y2,step.optInt("duration",420),ok->{if(!running||generation!=executionGeneration)return;lastStepSuccess=ok;report(ok?"نجح تمرير الشاشة.":"فشل تمرير الشاشة.");scheduleAfterAction(generation,step);});
         } else if (TYPE_TYPE_TEXT.equals(type)) {
             lastStepSuccess = typeTextIntoFocusedField(step.optString("value", ""));
-            report(lastStepSuccess ? "تمت كتابة النص في الحقل المركّز." : "فشلت كتابة النص: لا يوجد حقل إدخال مركّز أو لا يدعم الكتابة."); scheduleAfterAction(generation, step);
+            report(lastStepSuccess ? "تم إدخال النص في حقل الإدخال (إمكانية الوصول/اللصق)." : "تعذرت الكتابة: لا يوجد حقل قابل للتحرير مركّز. انقر حقل الإدخال أولًا."); scheduleAfterAction(generation, step);
+        } else if (TYPE_PRESS_ENTER.equals(type)) {
+            lastStepSuccess = performImeEnter(); report(lastStepSuccess ? "تم إرسال أمر Enter/بحث." : "تعذر إرسال Enter؛ قد لا يدعم التطبيق إجراء IME. جرّب النقر على زر البحث."); scheduleAfterAction(generation, step);
+        } else if (TYPE_WAIT_TEXT.equals(type)) {
+            waitForTextStep(step, generation, 0, Math.max(1, Math.min(720, step.optInt("attempts", 20))), Math.max(250, Math.min(60000, step.optInt("intervalMs", 500))));
+        } else if (TYPE_WAIT_INPUT.equals(type)) {
+            waitForInputStep(step, generation, 0, Math.max(1, Math.min(720, step.optInt("attempts", 20))), Math.max(250, Math.min(60000, step.optInt("intervalMs", 500))));
+        } else if (TYPE_OPEN_URL.equals(type)) {
+            lastStepSuccess = openHttpUrl(step.optString("url", "")); report(lastStepSuccess ? "تم فتح الرابط في التطبيق المناسب." : "تعذر فتح الرابط: " + step.optString("url", "")); scheduleAfterAction(generation, step);
+        } else if (TYPE_CHECK_INTERNET.equals(type) || TYPE_WAIT_INTERNET.equals(type)) {
+            runInternetStep(step, type, generation);
+        } else if (TYPE_NOTIFY.equals(type)) {
+            notifyUser(step.optString("message", "تم تنفيذ الأمر بنجاح"), step.optBoolean("sound", true)); lastStepSuccess = true;
+            report("تنبيه: " + step.optString("message", "تم تنفيذ الأمر بنجاح")); scheduleAfterAction(generation, step);
         } else {
             lastStepSuccess = false; report("نوع خطوة غير معروف: " + type); scheduleNext(generation, 0);
         }
@@ -2518,7 +2847,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         running = false; paused = false; executionInFlight = false;
         currentBranches.clear(); currentLoops.clear();
         executionGeneration++;
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         if (wasCustomTest) { singleStepTesting = false; customTestMode = false; message = "انتهى اختبار الخطوة المخصصة: " + message; }
         report(message);
         showBubble();
@@ -2566,6 +2895,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 int retries = Math.max(1, Math.min(10, step.optInt("retries", 1)));
                 for (int i = 0; i < retries && !ok; i++) ok = clickText(step.optString("value", ""));
                 finishSingleStepTest(generation, ok ? "نجح اختبار النقر على النص." : "فشل اختبار النقر على النص.");
+            } else if (TYPE_LAUNCH_APP.equals(type)) {
+                String appName = step.optString("appName", step.optString("value", "")).trim();
+                boolean ok = launchInstalledApp(appName);
+                finishSingleStepTest(generation, ok ? "نجح فتح التطبيق: " + appName : "فشل فتح التطبيق: " + appName);
             } else if (TYPE_BACK.equals(type)) {
                 boolean ok = performGlobalAction(GLOBAL_ACTION_BACK); finishSingleStepTest(generation, ok ? "نجح اختبار الرجوع." : "فشل اختبار الرجوع.");
             } else if (TYPE_HOME.equals(type)) {
@@ -2596,6 +2929,18 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 performSwipe(x1,y1,x2,y2,step.optInt("duration",420),ok->finishSingleStepTest(generation,ok?"نجح اختبار التمرير.":"فشل اختبار التمرير."));
             } else if (TYPE_TYPE_TEXT.equals(type)) {
                 boolean ok=typeTextIntoFocusedField(step.optString("value","")); finishSingleStepTest(generation,ok?"نجح اختبار كتابة النص.":"فشل اختبار كتابة النص.");
+            } else if (TYPE_PRESS_ENTER.equals(type)) {
+                boolean ok=performImeEnter(); finishSingleStepTest(generation,ok?"نجح اختبار Enter/بحث.":"تعذر تنفيذ Enter/بحث في هذا الحقل.");
+            } else if (TYPE_WAIT_TEXT.equals(type)) {
+                boolean found=containsTextOnScreen(step.optString("value","")); finishSingleStepTest(generation,found?"النص المنتظر ظاهر حاليًا.":"النص المنتظر غير ظاهر حاليًا.");
+            } else if (TYPE_WAIT_INPUT.equals(type)) {
+                boolean found=hasEditableInputOnScreen(); finishSingleStepTest(generation,found?"يوجد حقل إدخال قابل للتحرير.":"لم يظهر حقل إدخال قابل للتحرير.");
+            } else if (TYPE_OPEN_URL.equals(type)) {
+                boolean ok=openHttpUrl(step.optString("url","")); finishSingleStepTest(generation,ok?"تم فتح الرابط.":"تعذر فتح الرابط.");
+            } else if (TYPE_NOTIFY.equals(type)) {
+                notifyUser(step.optString("message","تم تنفيذ الأمر بنجاح"),step.optBoolean("sound",true)); finishSingleStepTest(generation,"تم اختبار التنبيه.");
+            } else if (TYPE_CHECK_INTERNET.equals(type) || TYPE_WAIT_INTERNET.equals(type)) {
+                probeInternetAsync(step.optString("testUrl",""),step.optInt("timeoutMs",4000),ok->finishSingleStepTest(generation,ok?"نجح اختبار اتصال الإنترنت.":"فشل اختبار اتصال الإنترنت."));
             } else if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
                 boolean condition = TYPE_IF_SUCCESS.equals(type) ? lastStepSuccess : !lastStepSuccess;
                 finishSingleStepTest(generation, "اختبار الشرط: " + (condition ? "سيتحقق الشرط بناءً على نتيجة الخطوة السابقة." : "لن يتحقق الشرط بناءً على نتيجة الخطوة السابقة."));
@@ -2742,7 +3087,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         boolean wasPanel = panelVisible;
         boolean shouldRestoreUi = !running && !singleStepTesting;
         hidePanel(); removeView(bubble); bubble = null;
-        if (running) { removeView(runControls); runControls = null; }
+        if (running) { removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null; }
         handler.postDelayed(() -> takeScreenshot((bitmap,error) -> {
             if (shouldRestoreUi) { showBubble(); if (wasPanel) showPanel(); }
             callback.done(bitmap,error);
@@ -2753,7 +3098,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void tapMatchedTarget(ImageMatcher.Result match, GestureCallback callback) {
         if (Build.VERSION.SDK_INT < 24 || match == null) { callback.done(false); return; }
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         hidePanel(); removeView(bubble); bubble = null;
         handler.postDelayed(() -> {
             try {
@@ -2772,7 +3117,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void performTap(int x, int y, GestureCallback callback) {
         if (Build.VERSION.SDK_INT < 24) { callback.done(false); return; }
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         hidePanel(); removeView(bubble); bubble = null;
         handler.postDelayed(() -> {
             try {
@@ -2789,7 +3134,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void performLongPress(int x, int y, int duration, GestureCallback callback) {
         if (Build.VERSION.SDK_INT < 24) { callback.done(false); return; }
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         hidePanel(); removeView(bubble); bubble = null;
         handler.postDelayed(() -> {
             try {
@@ -2811,7 +3156,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         android.util.DisplayMetrics metrics=realScreenMetrics(); int width=metrics.widthPixels, height=metrics.heightPixels;
         float x1=width*Math.max(0,Math.min(100,x1p))/100f, y1=height*Math.max(0,Math.min(100,y1p))/100f;
         float x2=width*Math.max(0,Math.min(100,x2p))/100f, y2=height*Math.max(0,Math.min(100,y2p))/100f;
-        removeView(runControls); runControls = null;
+        removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
         hidePanel(); removeView(bubble); bubble = null;
         handler.postDelayed(() -> {
             try {
@@ -2826,17 +3171,259 @@ public class BotnaAccessibilityService extends AccessibilityService {
         },80);
     }
 
-    private boolean typeTextIntoFocusedField(String value) {
-        AccessibilityNodeInfo root=findTargetRoot(); if(root==null)return false;
-        AccessibilityNodeInfo focused=null;
+    private interface NetworkProbeCallback { void done(boolean reachable); }
+
+    /** Make a real HTTP request and consume a small part of the response. The default endpoint is an expected HTTP 204 connectivity check. */
+    private void probeInternetAsync(String customUrl, int timeoutMs, NetworkProbeCallback callback) {
+        final String selected = customUrl == null || customUrl.trim().isEmpty()
+                ? "https://connectivitycheck.gstatic.com/generate_204" : customUrl.trim();
+        final int timeout = Math.max(1000, Math.min(12000, timeoutMs));
+        if (!selected.startsWith("https://") && !selected.startsWith("http://")) { callback.done(false); return; }
         try {
-            focused=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-            if(focused==null || !focused.isEditable())return false;
-            android.os.Bundle args=new android.os.Bundle();
-            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,value);
-            return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args);
-        } catch(Exception e){return false;}
-        finally { if(focused!=null)focused.recycle(); root.recycle(); }
+            networkExecutor.execute(() -> {
+                boolean reachable = false;
+                HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection) new URL(selected).openConnection();
+                    connection.setRequestMethod("GET");
+                    connection.setConnectTimeout(timeout); connection.setReadTimeout(timeout);
+                    connection.setUseCaches(false); connection.setInstanceFollowRedirects(false);
+                    connection.setRequestProperty("Cache-Control", "no-cache");
+                    connection.setRequestProperty("User-Agent", "Botna-Connectivity-Check/1.0");
+                    int code = connection.getResponseCode();
+                    if (selected.contains("connectivitycheck.gstatic.com/generate_204") || selected.contains("google.com/generate_204")) {
+                        reachable = code == 204;
+                    } else {
+                        reachable = code >= 200 && code < 300;
+                        if (reachable && code != HttpURLConnection.HTTP_NO_CONTENT) {
+                            InputStream in = connection.getInputStream();
+                            try { byte[] buffer = new byte[256]; in.read(buffer); } finally { in.close(); }
+                        }
+                    }
+                } catch (Exception ignored) { reachable = false; }
+                finally { if (connection != null) connection.disconnect(); }
+                final boolean result = reachable;
+                handler.post(() -> callback.done(result));
+            });
+        } catch (Exception e) { callback.done(false); }
+    }
+
+    private void runInternetStep(JSONObject step, String type, int generation) {
+        final boolean waitMode = TYPE_WAIT_INTERNET.equals(type);
+        final int maxAttempts = Math.max(1, Math.min(waitMode ? 720 : 20, step.optInt("attempts", waitMode ? 120 : 3)));
+        final int interval = Math.max(250, Math.min(60000, step.optInt("intervalMs", 5000)));
+        final int timeout = Math.max(1000, Math.min(12000, step.optInt("timeoutMs", 4000)));
+        runInternetAttempt(step, generation, waitMode, 0, maxAttempts, interval, timeout);
+    }
+
+    private void runInternetAttempt(JSONObject step, int generation, boolean waitMode, int attempt, int maxAttempts, int interval, int timeout) {
+        if (!running || generation != executionGeneration) return;
+        if (paused) { executionInFlight = false; showRunControls(); return; }
+        report((waitMode ? "انتظار عودة الإنترنت — " : "فحص الإنترنت — ") + "محاولة " + (attempt + 1) + "/" + maxAttempts);
+        probeInternetAsync(step.optString("testUrl", ""), timeout, ok -> {
+            if (!running || generation != executionGeneration) return;
+            if (paused) { executionInFlight = false; showRunControls(); return; }
+            if (ok) {
+                lastStepSuccess = true;
+                report(waitMode ? "عاد اتصال الإنترنت بنجاح." : "اتصال الإنترنت يعمل؛ نجح إرسال الطلب واستلام الاستجابة.");
+                if (waitMode && step.optBoolean("notifyOnSuccess", false)) notifyUser(step.optString("successMessage", "عاد الإنترنت بنجاح"), true);
+                scheduleAfterAction(generation, step);
+            } else if (attempt + 1 < maxAttempts) {
+                handler.postDelayed(() -> runInternetAttempt(step, generation, waitMode, attempt + 1, maxAttempts, interval, timeout), interval);
+            } else {
+                lastStepSuccess = false;
+                report(waitMode ? "انتهت مهلة انتظار الإنترنت بعد " + maxAttempts + " محاولة." : "لم يستجب الإنترنت بعد " + maxAttempts + " محاولات.");
+                scheduleAfterAction(generation, step);
+            }
+        });
+    }
+
+    private boolean openHttpUrl(String rawUrl) {
+        if (rawUrl == null) return false;
+        String url = rawUrl.trim();
+        if (!(url.startsWith("https://") || url.startsWith("http://"))) return false;
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return true;
+        } catch (Exception e) { return false; }
+    }
+
+    private void notifyUser(String message, boolean sound) {
+        String safe = message == null || message.trim().isEmpty() ? "تم تنفيذ الأمر بنجاح" : message.trim();
+        Toast.makeText(getApplicationContext(), safe, Toast.LENGTH_LONG).show();
+        if (sound) {
+            try {
+                ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85);
+                tone.startTone(ToneGenerator.TONE_PROP_ACK, 260);
+                handler.postDelayed(tone::release, 500);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private boolean performImeEnter() {
+        AccessibilityNodeInfo root = findTargetRoot();
+        if (root == null) return false;
+        AccessibilityNodeInfo focused = null;
+        try {
+            focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (focused != null && Build.VERSION.SDK_INT >= 30) {
+                try { if (focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId())) return true; } catch (Exception ignored) { }
+            }
+        } finally { if (focused != null) focused.recycle(); root.recycle(); }
+        // Some apps expose a search button instead of an IME action.
+        return clickText("بحث") || clickText("Search") || clickText("Go") || clickText("تم");
+    }
+
+    private boolean launchInstalledApp(String query) {
+        if (query == null || query.trim().isEmpty()) return false;
+        String target = normalizeArabicCommand(query).trim();
+        PackageManager pm = getPackageManager();
+        try {
+            Intent direct = pm.getLaunchIntentForPackage(query.trim());
+            if (direct != null) {
+                direct.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                startActivity(direct);
+                return true;
+            }
+        } catch (Exception ignored) { }
+        try {
+            java.util.List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+            ApplicationInfo exact = null, partial = null;
+            for (ApplicationInfo info : apps) {
+                String packageName = info.packageName == null ? "" : info.packageName;
+                String label;
+                try { label = String.valueOf(pm.getApplicationLabel(info)); }
+                catch (Exception ex) { label = packageName; }
+                String normalizedLabel = normalizeArabicCommand(label).trim();
+                String normalizedPackage = normalizeArabicCommand(packageName).replace('.', ' ').trim();
+                if (normalizedLabel.equals(target) || normalizedPackage.equals(target)) { exact = info; break; }
+                if (partial == null && (!target.isEmpty()) && (normalizedLabel.contains(target) || target.contains(normalizedLabel) || normalizedPackage.contains(target))) partial = info;
+            }
+            ApplicationInfo match = exact != null ? exact : partial;
+            if (match == null) return false;
+            Intent launch = pm.getLaunchIntentForPackage(match.packageName);
+            if (launch == null) return false;
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            startActivity(launch);
+            return true;
+        } catch (Exception ignored) { return false; }
+    }
+
+    private boolean typeTextIntoFocusedField(String value) {
+        AccessibilityNodeInfo root = findTargetRoot();
+        if (root == null || value == null) { if (root != null) root.recycle(); return false; }
+        AccessibilityNodeInfo target = null;
+        try {
+            target = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (target == null || !target.isEditable()) {
+                if (target != null) { target.recycle(); target = null; }
+                target = findFirstEditableNode(root);
+                if (target != null) {
+                    target.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+                    // A real click on the input usually opens the phone's keyboard before
+                    // setting/pasting text, while the automation remains independent of layout.
+                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                }
+            }
+            if (target == null || !target.isEditable() || !target.isEnabled()) return false;
+            android.os.Bundle args = new android.os.Bundle();
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+            if (target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true;
+
+            // Many custom fields reject ACTION_SET_TEXT but accept paste. This fallback
+            // writes full Unicode text (including Arabic) into the currently editable field.
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard == null) return false;
+            clipboard.setPrimaryClip(ClipData.newPlainText("botna_temporary_text", value));
+            boolean pasted = target.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+            if (pasted) handler.postDelayed(() -> {
+                try {
+                    ClipData clip = clipboard.getPrimaryClip();
+                    if (clip != null && clip.getDescription() != null && "botna_temporary_text".contentEquals(clip.getDescription().getLabel()))
+                        clipboard.setPrimaryClip(ClipData.newPlainText("", ""));
+                } catch (Exception ignored) { }
+            }, 1800);
+            return pasted;
+        } catch (Exception e) { return false; }
+        finally { if (target != null) target.recycle(); root.recycle(); }
+    }
+
+    private AccessibilityNodeInfo findFirstEditableNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        try {
+            if (node.isEditable() && node.isEnabled() && node.isFocusable()) return AccessibilityNodeInfo.obtain(node);
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child == null) continue;
+                AccessibilityNodeInfo found = null;
+                try { found = findFirstEditableNode(child); } finally { child.recycle(); }
+                if (found != null) return found;
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private void waitForInputStep(JSONObject step, int generation, int attempt, int maxAttempts, int intervalMs) {
+        if (!running || generation != executionGeneration) return;
+        if (paused) { executionInFlight = false; showRunControls(); return; }
+        if (hasEditableInputOnScreen()) { lastStepSuccess=true; report("ظهر حقل إدخال قابل للكتابة."); scheduleAfterAction(generation,step); return; }
+        if (attempt + 1 >= maxAttempts) { lastStepSuccess=false; report("لم يظهر حقل الإدخال بعد "+maxAttempts+" محاولة."); scheduleAfterAction(generation,step); return; }
+        report("انتظار ظهور حقل الإدخال — محاولة "+(attempt+1)+"/"+maxAttempts);
+        handler.postDelayed(()->waitForInputStep(step,generation,attempt+1,maxAttempts,intervalMs),intervalMs);
+    }
+
+    private boolean hasEditableInputOnScreen() {
+        AccessibilityNodeInfo root=findTargetRoot(); if(root==null)return false;
+        try { return hasEditableRecursive(root,0); } finally { root.recycle(); }
+    }
+
+    private boolean hasEditableRecursive(AccessibilityNodeInfo node,int depth) {
+        if(node==null||depth>28)return false;
+        try {
+            if(node.isEditable()&&node.isEnabled()&&node.isVisibleToUser())return true;
+            for(int i=0;i<node.getChildCount();i++){ AccessibilityNodeInfo child=node.getChild(i); if(child==null)continue; boolean found; try{found=hasEditableRecursive(child,depth+1);}finally{child.recycle();} if(found)return true; }
+        }catch(Exception ignored){}
+        return false;
+    }
+
+    private void waitForTextStep(JSONObject step, int generation, int attempt, int maxAttempts, int intervalMs) {
+        if (!running || generation != executionGeneration) return;
+        if (paused) { executionInFlight = false; showRunControls(); return; }
+        String target = step.optString("value", "").trim();
+        if (containsTextOnScreen(target)) {
+            lastStepSuccess = true; report("ظهر النص المنتظر: " + target); scheduleAfterAction(generation, step); return;
+        }
+        if (attempt + 1 >= maxAttempts) {
+            lastStepSuccess = false; report("لم يظهر النص «" + target + "» بعد " + maxAttempts + " محاولة."); scheduleAfterAction(generation, step); return;
+        }
+        report("انتظار ظهور النص «" + target + "» — محاولة " + (attempt + 1) + "/" + maxAttempts);
+        handler.postDelayed(() -> waitForTextStep(step, generation, attempt + 1, maxAttempts, intervalMs), intervalMs);
+    }
+
+    private boolean containsTextOnScreen(String target) {
+        if (target == null || target.trim().isEmpty()) return false;
+        AccessibilityNodeInfo root = findTargetRoot(); if (root == null) return false;
+        try { return containsTextRecursive(root, target.trim().toLowerCase(Locale.ROOT), 0); }
+        finally { root.recycle(); }
+    }
+
+    private boolean containsTextRecursive(AccessibilityNodeInfo node, String target, int depth) {
+        if (node == null || depth > 28) return false;
+        try {
+            CharSequence text = node.getText(); CharSequence desc = node.getContentDescription(); CharSequence hint = node.getHintText();
+            String value = text == null ? "" : text.toString().trim();
+            if (value.isEmpty() && desc != null) value = desc.toString().trim();
+            if (value.isEmpty() && hint != null) value = hint.toString().trim();
+            if (!value.isEmpty() && value.toLowerCase(Locale.ROOT).contains(target)) return true;
+            for (int i=0;i<node.getChildCount();i++) {
+                AccessibilityNodeInfo child = node.getChild(i); if (child == null) continue;
+                boolean found; try { found = containsTextRecursive(child,target,depth+1); } finally { child.recycle(); }
+                if (found) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
     }
 
     private boolean clickText(String target) {
@@ -2868,6 +3455,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         if (node == null) return false;
         String value = node.getText()==null ? "" : node.getText().toString().trim();
         if(value.isEmpty() && node.getContentDescription()!=null) value=node.getContentDescription().toString().trim();
+        if(value.isEmpty() && node.getHintText()!=null) value=node.getHintText().toString().trim();
         boolean hit = exact ? value.equalsIgnoreCase(target) : value.toLowerCase(Locale.ROOT).contains(target.toLowerCase(Locale.ROOT));
         if (hit && clickNodeOrParent(node)) return true;
         for (int i=0;i<node.getChildCount();i++) {
@@ -2938,7 +3526,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void removeView(View view) { if(wm!=null&&view!=null)try{wm.removeView(view);}catch(Exception ignored){} }
     private void saveResult(String message) { String stamp=new java.text.SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(new java.util.Date()); getSharedPreferences(BotnaStore.PREFS,MODE_PRIVATE).edit().putString(BotnaStore.KEY_LAST_RESULT,stamp+" — "+message).apply(); }
     private String getLastResult() { return getSharedPreferences(BotnaStore.PREFS,MODE_PRIVATE).getString(BotnaStore.KEY_LAST_RESULT,"جاهز."); }
-    private void report(String message) { saveResult(message); if(resultLabel!=null) resultLabel.setText(getLastResult()); }
+    private void report(String message) {
+        saveResult(message);
+        if (resultLabel != null) resultLabel.setText(getLastResult());
+        updateRunStatus();
+    }
     private void putString(JSONObject o,String k,String v){try{o.put(k,v);}catch(JSONException ignored){}}
     private void putInt(JSONObject o,String k,int v){try{o.put(k,v);}catch(JSONException ignored){}}
     private void putBoolean(JSONObject o,String k,boolean v){try{o.put(k,v);}catch(JSONException ignored){}}
