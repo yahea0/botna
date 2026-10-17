@@ -108,7 +108,7 @@ public class MainActivity extends Activity {
         dataCard.addView(text("بياناتك المحلية", 18, TEXT, true));
         int scriptsCount = BotnaStore.scripts(this).length();
         int imagesCount = BotnaStore.imageLibrary(this).length();
-        dataSummary = text("السكربتات المحفوظة: " + scriptsCount + "\nقوالب مكتبة الصور: " + imagesCount + "\nحالة مترجم الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "مفتاح محفوظ" : "يتطلب إعداد مفتاح API"), 14, MUTED, false);
+        dataSummary = text("السكربتات المحفوظة: " + scriptsCount + "\nقوالب مكتبة الصور: " + imagesCount + "\nالمزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this)) + "\nحالة الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "إعداد API مكتمل" : "يتطلب إعداد مفتاح/نقطة اتصال API"), 14, MUTED, false);
         dataCard.addView(dataSummary, matchWrap());
         TextView localInfo = text("السكربتات وقوالب الصور تبقى في مساحة التطبيق. يُشفّر مفتاح API محليًا باستخدام Android Keystore؛ لا تشارك المفتاح ولا تضعه في مستودع GitHub. استخدام مزوّد الذكاء الاصطناعي عبر API قد يكلّف رسومًا حسب حسابك.", 12, MUTED, false);
         LinearLayout.LayoutParams localInfoLp = matchWrap(); localInfoLp.topMargin = dp(10); dataCard.addView(localInfo, localInfoLp);
@@ -142,7 +142,9 @@ public class MainActivity extends Activity {
                 "• انقر موقع 50,70\n" +
                 "• مرر للأسفل\n" +
                 "• كرر 3 مرات: تابع صورة رقم 1 بالمكتبة دون ضغط\n" +
-                "\nأفضل نتيجة للأوامر المركبة تأتي مع إعداد مفتاح API في إعدادات الذكاء الاصطناعي. راجع دائمًا معاينة الترجمة قبل التنفيذ.";
+                "• افتح تطبيق واتساب ثم انتظر ثانيتين\n" +
+                "• إذا فشل فتح التطبيق، ارجع وإلا تابع صورة رقم 2\n" +
+                "\nأفضل نتيجة للأوامر المركبة تأتي مع مزوّد API مضبوط. راجع دائمًا معاينة الترجمة قبل التنفيذ.";
         new AlertDialog.Builder(this).setTitle("دليل الأوامر المخصصة").setMessage(guide).setPositiveButton("حسنًا", null).show();
     }
 
@@ -182,7 +184,8 @@ public class MainActivity extends Activity {
         if (dataSummary != null) {
             dataSummary.setText("السكربتات المحفوظة: " + BotnaStore.scripts(this).length()
                     + "\nقوالب مكتبة الصور: " + BotnaStore.imageLibrary(this).length()
-                    + "\nحالة مترجم الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "مفتاح محفوظ" : "يتطلب إعداد مفتاح API"));
+                    + "\nالمزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this))
+                    + "\nحالة الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "إعداد API مكتمل" : "يتطلب إعداد مفتاح/نقطة اتصال API"));
         }
 
         if (lastResult != null) {
