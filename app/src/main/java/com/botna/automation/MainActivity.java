@@ -1,6 +1,7 @@
 package com.botna.automation;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -293,6 +294,21 @@ public class MainActivity extends Activity {
         page.addView(disclaimer, disclaimerLp);
 
         setContentView(scroll);
+    }
+
+
+    @Override
+    public void onBackPressed() {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("حفظ السكربتات والخروج")
+                .setMessage("تُحفظ خطوات السكربتات تلقائيًا أثناء التعديل. هل تريد حفظها الآن والخروج من Botna؟")
+                .setPositiveButton("حفظ وخروج", (d, w) -> {
+                    BotnaStore.saveScripts(this, BotnaStore.scripts(this));
+                    finish();
+                })
+                .setNegativeButton("إلغاء", (d, w) -> { })
+                .create();
+        dialog.show();
     }
 
     private void refreshStatus() {
