@@ -11,6 +11,7 @@ import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * OpenCV native template matching. Image processing runs in optimized native code;
@@ -62,6 +63,12 @@ public final class ImageMatcher {
     }
 
     public static Result find(Bitmap screen, List<NamedBitmap> templates, int threshold) {
+        return find(screen, templates, threshold, null);
+    }
+
+    /** Match using a per-template acceptance threshold while preserving the best raw score for diagnostics. */
+    public static Result find(Bitmap screen, List<NamedBitmap> templates, int threshold,
+                              Map<String, Integer> perTemplateThresholds) {
         if (screen == null || screen.isRecycled() || templates == null || templates.isEmpty()) {
             return null;
         }
@@ -73,6 +80,7 @@ public final class ImageMatcher {
         Mat screenGrayFull = new Mat();
         Mat screenGray = new Mat();
         Result best = null;
+        Result bestPassing = null;
 
         try {
             Utils.bitmapToMat(screen, screenRgba);
@@ -161,20 +169,27 @@ public final class ImageMatcher {
                             Core.MinMaxLocResult mm = Core.minMaxLoc(result);
                             int score = (int) Math.round(Math.max(0.0, Math.min(1.0, mm.maxVal)) * 100.0);
 
-                            if (best == null || score > best.score) {
-                                int x = (int) Math.round(mm.maxLoc.x * mapX);
-                                int y = (int) Math.round(mm.maxLoc.y * mapY);
-                                int originalW = (int) Math.round(w * mapX);
-                                int originalH = (int) Math.round(h * mapY);
-
-                                best = new Result(
-                                        score,
-                                        Math.max(0, x),
-                                        Math.max(0, y),
-                                        Math.max(1, originalW),
-                                        Math.max(1, originalH),
-                                        named.name
-                                );
+                            int x = (int) Math.round(mm.maxLoc.x * mapX);
+                            int y = (int) Math.round(mm.maxLoc.y * mapY);
+                            int originalW = (int) Math.round(w * mapX);
+                            int originalH = (int) Math.round(h * mapY);
+                            Result candidate = new Result(
+                                    score,
+                                    Math.max(0, x),
+                                    Math.max(0, y),
+                                    Math.max(1, originalW),
+                                    Math.max(1, originalH),
+                                    named.name
+                            );
+                            if (best == null || score > best.score) best = candidate;
+                            int perTemplateThreshold = threshold;
+                            if (perTemplateThresholds != null && perTemplateThresholds.containsKey(named.name)) {
+                                Integer configured = perTemplateThresholds.get(named.name);
+                                if (configured != null) perTemplateThreshold = Math.max(1, Math.min(100, configured));
+                            }
+                            if (score >= perTemplateThreshold &&
+                                    (bestPassing == null || score > bestPassing.score)) {
+                                bestPassing = candidate;
                             }
                         } finally {
                             templ.release();
@@ -187,7 +202,7 @@ public final class ImageMatcher {
                 }
             }
 
-            return best;
+            return bestPassing != null ? bestPassing : best;
         } finally {
             screenRgba.release();
             screenGrayFull.release();
