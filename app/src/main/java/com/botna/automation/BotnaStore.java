@@ -41,7 +41,7 @@ public final class BotnaStore {
         prefs(context)
                 .edit()
                 .putString(KEY_SCRIPTS, scripts.toString())
-                .apply();
+                .commit();
     }
 
     public static String activeId(Context context) {
@@ -55,7 +55,7 @@ public final class BotnaStore {
         prefs(context)
                 .edit()
                 .putString(KEY_ACTIVE_SCRIPT, id)
-                .apply();
+                .commit();
     }
 
     public static JSONObject getScript(
@@ -121,7 +121,7 @@ public final class BotnaStore {
         JSONObject item = new JSONObject();
 
         try {
-            item.put("id", "s" + System.currentTimeMillis());
+            item.put("id", "s" + System.nanoTime());
             item.put("name", name);
             item.put("steps", new JSONArray());
             item.put("created", System.currentTimeMillis());
@@ -194,7 +194,7 @@ public final class BotnaStore {
         JSONObject step = new JSONObject();
 
         try {
-            step.put("id", "p" + System.currentTimeMillis());
+            step.put("id", "p" + System.nanoTime());
             step.put("type", type);
             step.put("label", label);
             step.put("value", "");
