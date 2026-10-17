@@ -880,7 +880,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 int retries = angle == null ? step.optInt("retries", 1) : angle.optInt("retries", step.optInt("retries", 1));
                 boolean enabled = angle == null || angle.optBoolean("enabled", true);
                 LinearLayout row = horizontal(); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(4), dp(5), dp(4), dp(5));
-                row.setBackground(glassShape(Color.argb(100, 8, 17, 28), Color.argb(95, CYAN), 1, 10));
+                row.setBackground(glassShape(Color.argb(100, 8, 17, 28), Color.argb(95, Color.red(CYAN), Color.green(CYAN), Color.blue(CYAN)), 1, 10));
                 ImageView preview = new ImageView(this); preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 Bitmap bitmap = readTemplate(filename);
                 if (bitmap != null) {
