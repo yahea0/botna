@@ -26,6 +26,8 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -44,6 +46,8 @@ import java.io.FileOutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -82,6 +86,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService matcherExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
+    private WindowManager.LayoutParams runControlsParams;
     private WindowManager wm;
     private View bubble;
     private View panel;
@@ -145,6 +151,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         currentBranches.clear(); currentLoops.clear();
         try { BotnaStore.saveScripts(this, BotnaStore.scripts(this)); } catch (Exception ignored) { }
         matcherExecutor.shutdownNow();
+        aiExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -275,6 +282,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
         readLp.topMargin = dp(6);
         content.addView(readScreenButton, readLp);
         readScreenButton.setOnClickListener(v -> readScreen());
+        Button aiSettingsButton = button("⚙ إعدادات مترجم الذكاء الاصطناعي", false);
+        LinearLayout.LayoutParams aiSettingsLp = new LinearLayout.LayoutParams(-1, dp(38));
+        aiSettingsLp.topMargin = dp(5); content.addView(aiSettingsButton, aiSettingsLp);
+        aiSettingsButton.setOnClickListener(v -> BotnaAICompiler.showSettingsDialog(this, true, this::rebuildPanel));
 
         TextView addTitle = label("إضافة خطوة", 14, TEXT, true);
         LinearLayout.LayoutParams addTitleLp = wrap();
@@ -529,7 +540,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 card.addView(thumb, new LinearLayout.LayoutParams(dp(42), dp(42)));
             }
             String desc = step.optString("label", step.optString("type", "خطوة"));
-            if (TYPE_IMAGE.equals(step.optString("type"))) desc += " • صور: " + (images == null ? 0 : images.length()) + " • تطابق " + step.optInt("threshold", 85) + "%";
+            if (TYPE_IMAGE.equals(step.optString("type"))) {
+                desc += " • صور: " + (images == null ? 0 : images.length()) + " • افتراضي " + step.optInt("threshold", 85) + "%";
+                if (images != null && images.length() > 0) desc += " • الزاوية الأولى " + thresholdForTemplate(step, images.optString(0)) + "%";
+            }
             TextView item = label(desc, 12, TEXT, false);
             LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(0, -2, 1); itemLp.gravity = Gravity.CENTER_VERTICAL; card.addView(item, itemLp);
             TextView del = label("×", 22, Color.rgb(255, 115, 133), true); del.setGravity(Gravity.CENTER); card.addView(del, new LinearLayout.LayoutParams(dp(30), dp(42)));
@@ -683,12 +697,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
         JSONObject step = steps.optJSONObject(index); if (step == null) return;
         String type = step.optString("type");
         if (TYPE_CUSTOM.equals(type)) {
-            showChoice("إعدادات الخطوة المخصصة", new String[]{"كتابة/تعديل الأمر العربي", "مكتبة الصور", "عرض الأوامر المترجمة", "اختبار الخطوة", step.optBoolean("enabled", true) ? "تعطيل الخطوة" : "تفعيل الخطوة", "حذف الخطوة"}, choice -> {
+            showChoice("إعدادات الخطوة المخصصة", new String[]{"كتابة/تعديل الأمر العربي", "مكتبة الصور", "إعدادات الذكاء الاصطناعي", "عرض الأوامر المترجمة", "اختبار الخطوة", step.optBoolean("enabled", true) ? "تعطيل الخطوة" : "تفعيل الخطوة", "حذف الخطوة"}, choice -> {
                 if (choice == 0) editCustomInstructions(step);
                 else if (choice == 1) showImageLibrary();
-                else if (choice == 2) previewCustomCompilation(step);
-                else if (choice == 3) testStep(index);
-                else if (choice == 4) toggleStep(script, step);
+                else if (choice == 2) BotnaAICompiler.showSettingsDialog(this, true, () -> editCustomInstructions(findStepById(ensureScript(), step.optString("id"))));
+                else if (choice == 3) previewCustomCompilation(step);
+                else if (choice == 4) testStep(index);
+                else if (choice == 5) toggleStep(script, step);
                 else confirmDeleteStep(index);
             });
             return;
@@ -849,28 +864,40 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void showImageAngles(JSONObject script, JSONObject step, int stepIndex) {
         JSONArray images = step.optJSONArray("images");
-        LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); list.setPadding(dp(10), dp(8), dp(10), dp(8));
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(8), dp(6), dp(8), dp(6));
         ScrollView scroller = new ScrollView(this); scroller.addView(list);
         List<Bitmap> loaded = new ArrayList<>();
         if (images == null || images.length() == 0) {
-            list.addView(label("لا توجد زوايا محفوظة في هذه الخطوة. استخدم «تغيير الهدف الحالي» لاستبدالها أو «قص هدف جديد» لإضافة خطوة مستقلة.", 14, MUTED, false));
+            list.addView(label("لا توجد زوايا محفوظة في هذه الخطوة. أضف زاوية أو قص هدفًا مستقلًا.", 14, MUTED, false));
         } else {
             for (int i = 0; i < images.length(); i++) {
                 final int angleIndex = i;
                 final String filename = images.optString(i);
-                LinearLayout row = horizontal(); row.setPadding(dp(5), dp(5), dp(5), dp(5));
+                JSONObject angle = findImageAngleSettings(step, filename);
+                int threshold = angle == null ? step.optInt("threshold", 85) : angle.optInt("threshold", step.optInt("threshold", 85));
+                int retries = angle == null ? step.optInt("retries", 1) : angle.optInt("retries", step.optInt("retries", 1));
+                boolean enabled = angle == null || angle.optBoolean("enabled", true);
+                LinearLayout row = horizontal(); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(4), dp(5), dp(4), dp(5));
+                row.setBackground(glassShape(Color.argb(100, 8, 17, 28), Color.argb(95, CYAN), 1, 10));
                 ImageView preview = new ImageView(this); preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 Bitmap bitmap = readTemplate(filename);
                 if (bitmap != null) {
                     loaded.add(bitmap);
-                    Bitmap previewBitmap = Bitmap.createScaledBitmap(bitmap, dp(74), dp(56), true);
+                    Bitmap previewBitmap = Bitmap.createScaledBitmap(bitmap, dp(58), dp(48), true);
                     if (previewBitmap != bitmap) loaded.add(previewBitmap);
                     preview.setImageBitmap(previewBitmap);
                 }
-                row.addView(preview, new LinearLayout.LayoutParams(dp(74), dp(56)));
-                TextView label = label("زاوية " + (i + 1) + "\n" + filename, 11, TEXT, false);
-                LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1); labelLp.setMargins(dp(7), 0, dp(7), 0); row.addView(label, labelLp);
-                Button remove = button("حذف", false); row.addView(remove, new LinearLayout.LayoutParams(dp(60), dp(38)));
+                row.addView(preview, new LinearLayout.LayoutParams(dp(58), dp(48)));
+                String angleText = "زاوية " + (i + 1) + "\nتطابق " + threshold + "% • محاولات " + retries + (enabled ? "" : " • معطلة");
+                TextView angleLabel = label(angleText, 11, enabled ? TEXT : MUTED, false);
+                LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1); labelLp.setMargins(dp(5), 0, dp(5), 0); row.addView(angleLabel, labelLp);
+                Button settings = button("⚙", false); settings.setTextSize(12); settings.setContentDescription("إعدادات الزاوية " + (angleIndex + 1));
+                row.addView(settings, new LinearLayout.LayoutParams(dp(36), dp(34)));
+                Button remove = button("×", false); remove.setTextSize(16); remove.setContentDescription("حذف الزاوية " + (angleIndex + 1));
+                row.addView(remove, new LinearLayout.LayoutParams(dp(30), dp(34)));
+                settings.setOnClickListener(v -> editImageAngleSettings(script, step, filename, angleIndex, stepIndex));
                 remove.setOnClickListener(v -> {
                     AlertDialog confirm = new AlertDialog.Builder(this).setTitle("حذف الزاوية")
                             .setMessage("هل تريد حذف الزاوية " + (angleIndex + 1) + " من خطوة الصورة؟")
@@ -878,8 +905,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
                                 JSONArray current = step.optJSONArray("images"); JSONArray next = new JSONArray();
                                 if (current != null) for (int j = 0; j < current.length(); j++) if (j != angleIndex) next.put(current.optString(j));
                                 try { step.put("images", next); } catch (JSONException ignored) { }
+                                removeImageAngleSettings(step, filename);
                                 BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
-                                report("تم حذف الزاوية من خطوة الصورة.");
+                                report("تم حذف الزاوية وإعداداتها.");
                                 if (imageAnglesDialog != null && imageAnglesDialog.isShowing()) imageAnglesDialog.dismiss();
                                 showImageAngles(script, step, stepIndex);
                             }).setNegativeButton("إلغاء", (d, w) -> { }).create();
@@ -889,7 +917,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 list.addView(row);
             }
         }
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("الزوايا المحفوظة")
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("زوايا الصورة وإعدادات كل زاوية")
                 .setView(scroller).setPositiveButton("إغلاق", (d,w)->{}).create();
         imageAnglesDialog = dialog;
         dialog.setOnDismissListener(d -> { for (Bitmap b : loaded) if (b != null && !b.isRecycled()) b.recycle(); });
@@ -897,6 +925,93 @@ public class BotnaAccessibilityService extends AccessibilityService {
         catch (Exception e) { report("تعذر عرض زوايا الصورة."); }
     }
 
+    private JSONObject findImageAngleSettings(JSONObject step, String filename) {
+        JSONArray settings = step == null ? null : step.optJSONArray("imageSettings");
+        if (settings == null || filename == null) return null;
+        for (int i = 0; i < settings.length(); i++) {
+            JSONObject item = settings.optJSONObject(i);
+            if (item != null && filename.equals(item.optString("fileName", ""))) return item;
+        }
+        return null;
+    }
+
+    private JSONObject ensureImageAngleSettings(JSONObject step, String filename) {
+        JSONObject current = findImageAngleSettings(step, filename);
+        if (current != null) return current;
+        JSONObject created = new JSONObject();
+        JSONArray settings = step.optJSONArray("imageSettings"); if (settings == null) settings = new JSONArray();
+        try {
+            created.put("fileName", filename);
+            created.put("threshold", step.optInt("threshold", 85));
+            created.put("retries", step.optInt("retries", 1));
+            created.put("retryDelay", step.optInt("retryDelay", 500));
+            created.put("enabled", true);
+            settings.put(created); step.put("imageSettings", settings);
+        } catch (JSONException ignored) { }
+        return created;
+    }
+
+    private void removeImageAngleSettings(JSONObject step, String filename) {
+        JSONArray old = step.optJSONArray("imageSettings"); if (old == null) return;
+        JSONArray next = new JSONArray();
+        for (int i = 0; i < old.length(); i++) {
+            JSONObject setting = old.optJSONObject(i);
+            if (setting == null || !filename.equals(setting.optString("fileName", ""))) next.put(setting);
+        }
+        try { step.put("imageSettings", next); } catch (JSONException ignored) { }
+    }
+
+    private void editImageAngleSettings(JSONObject script, JSONObject step, String filename, int angleIndex, int stepIndex) {
+        JSONObject setting = ensureImageAngleSettings(step, filename);
+        showChoice("إعدادات زاوية " + (angleIndex + 1), new String[]{
+                "نسبة التطابق: " + setting.optInt("threshold", step.optInt("threshold", 85)) + "%",
+                "عدد المحاولات: " + setting.optInt("retries", step.optInt("retries", 1)),
+                "فاصل إعادة المحاولة: " + setting.optInt("retryDelay", step.optInt("retryDelay", 500)) + " ms",
+                setting.optBoolean("enabled", true) ? "تعطيل هذه الزاوية" : "تفعيل هذه الزاوية",
+                "إرجاع إعدادات هذه الزاوية للافتراضي"
+        }, choice -> {
+            JSONObject liveStep = findStepById(script, step.optString("id"));
+            if (liveStep == null) return;
+            JSONObject liveSetting = ensureImageAngleSettings(liveStep, filename);
+            if (choice == 0) promptNumber("نسبة التطابق لهذه الزاوية (50–99)", liveSetting.optInt("threshold", liveStep.optInt("threshold", 85)), 50, 99, value -> {
+                putInt(liveSetting, "threshold", value); BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
+                report("تم حفظ نسبة التطابق لهذه الزاوية فقط."); refreshImageAnglesDialog(script, liveStep, stepIndex);
+            });
+            else if (choice == 1) promptNumber("عدد المحاولات لهذه الزاوية (1–10)", liveSetting.optInt("retries", liveStep.optInt("retries", 1)), 1, 10, value -> {
+                putInt(liveSetting, "retries", value); BotnaStore.saveSteps(this, script, BotnaStore.steps(script)); refreshImageAnglesDialog(script, liveStep, stepIndex);
+            });
+            else if (choice == 2) promptNumber("فاصل إعادة المحاولة لهذه الزاوية (ms)", liveSetting.optInt("retryDelay", liveStep.optInt("retryDelay", 500)), 100, 10000, value -> {
+                putInt(liveSetting, "retryDelay", value); BotnaStore.saveSteps(this, script, BotnaStore.steps(script)); refreshImageAnglesDialog(script, liveStep, stepIndex);
+            });
+            else if (choice == 3) {
+                putBoolean(liveSetting, "enabled", !liveSetting.optBoolean("enabled", true));
+                BotnaStore.saveSteps(this, script, BotnaStore.steps(script)); refreshImageAnglesDialog(script, liveStep, stepIndex);
+            } else if (choice == 4) {
+                removeImageAngleSettings(liveStep, filename); BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
+                report("تمت استعادة إعدادات الزاوية الافتراضية."); refreshImageAnglesDialog(script, liveStep, stepIndex);
+            }
+        });
+    }
+
+    private void refreshImageAnglesDialog(JSONObject script, JSONObject step, int stepIndex) {
+        if (imageAnglesDialog != null && imageAnglesDialog.isShowing()) imageAnglesDialog.dismiss();
+        showImageAngles(script, step, stepIndex);
+    }
+
+    private int thresholdForTemplate(JSONObject step, String filename) {
+        JSONObject setting = findImageAngleSettings(step, filename);
+        return clampInt(setting == null ? step.optInt("threshold", 85) : setting.optInt("threshold", step.optInt("threshold", 85)), 50, 99);
+    }
+
+    private int retriesForTemplate(JSONObject step, String filename) {
+        JSONObject setting = findImageAngleSettings(step, filename);
+        return clampInt(setting == null ? step.optInt("retries", 1) : setting.optInt("retries", step.optInt("retries", 1)), 1, 10);
+    }
+
+    private int retryDelayForTemplate(JSONObject step, String filename) {
+        JSONObject setting = findImageAngleSettings(step, filename);
+        return clampInt(setting == null ? step.optInt("retryDelay", 500) : setting.optInt("retryDelay", step.optInt("retryDelay", 500)), 100, 10000);
+    }
     private void chooseScriptDialog() {
         JSONArray all = BotnaStore.scripts(this); String[] names = new String[all.length()];
         for (int i = 0; i < all.length(); i++) { JSONObject s = all.optJSONObject(i); names[i] = s == null ? "سكربت" : s.optString("name", "سكربت"); }
@@ -951,55 +1066,284 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void editCustomInstructions(JSONObject step) {
+        if (step == null) return;
+        final String stepId = step.optString("id", "");
+        final String scriptId = ensureScript().optString("id", "");
+        final Runnable[] pendingDraftSave = new Runnable[1];
+        final boolean[] compiledPlanInvalidated = new boolean[1];
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(10), dp(6), dp(10), dp(4));
+
         EditText input = new EditText(this);
-        input.setText(step.optString("instructions", ""));
+        String stagedDraft = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE)
+                .getString(customDraftPreferenceKey(scriptId, stepId), null);
+        input.setText(stagedDraft == null ? step.optString("instructions", "") : stagedDraft);
         input.setSingleLine(false); input.setMinLines(5); input.setMaxLines(12);
         input.setGravity(Gravity.TOP | Gravity.START);
         input.setTextSize(15); input.setPadding(dp(12), dp(10), dp(12), dp(10));
         input.setTextColor(TEXT); input.setHintTextColor(MUTED);
         input.setHint("مثال: تابع صورة رقم 4 بالمكتبة، إذا وجدتها انتظر ثانيتين ثم ارجع");
         input.setBackground(glassShape(Color.rgb(8, 14, 22), CYAN, 1, 12));
+        content.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        // Save the draft while the user types. The previous translation is cleared immediately
+        // after the debounce so stale executable instructions can never run against new text.
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable editable) {
+                final String draft = editable == null ? "" : editable.toString();
+                getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit()
+                        .putString(customDraftPreferenceKey(scriptId, stepId), draft).apply();
+                if (!compiledPlanInvalidated[0]) {
+                    invalidateCustomCompilation(scriptId, stepId);
+                    compiledPlanInvalidated[0] = true;
+                }
+                if (pendingDraftSave[0] != null) handler.removeCallbacks(pendingDraftSave[0]);
+                pendingDraftSave[0] = () -> saveCustomDraft(scriptId, stepId, draft);
+                handler.postDelayed(pendingDraftSave[0], 350);
+            }
+        });
+
+        TextView aiStatus = label(BotnaAICompiler.isConfigured(this)
+                ? "المترجم الذكي متصل بالإعدادات (يتطلب إنترنت وقد يستهلك رصيد API)."
+                : "المترجم المحلي متاح. لإعادة صياغة الأوامر المعقدة فعّل مزوّد AI بمفتاح API.", 12, MUTED, false);
+        LinearLayout.LayoutParams statusLp = wrap(); statusLp.topMargin = dp(8); content.addView(aiStatus, statusLp);
+        LinearLayout buttons = horizontal();
+        Button settings = button("⚙ إعدادات AI", false);
+        Button library = button("مكتبة الصور", false);
+        buttons.addView(settings, new LinearLayout.LayoutParams(0, dp(38), 1));
+        LinearLayout.LayoutParams libLp = new LinearLayout.LayoutParams(0, dp(38), 1); libLp.leftMargin = dp(6); buttons.addView(library, libLp);
+        LinearLayout.LayoutParams buttonsLp = wrap(); buttonsLp.topMargin = dp(8); content.addView(buttons, buttonsLp);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("اكتب الأمر بالعربية")
-                .setMessage("سيحوّل محلّل الأوامر المحلي النص إلى خطوات قابلة للتنفيذ. ستظهر تنبيهات لأي عبارة لم يفهمها بدل تجاهلها بصمت.")
-                .setView(input)
+                .setMessage("سيُحفظ النص الأصلي أولًا حتى إذا فشل التحليل. يمكن للمترجم الذكي بناء خطة منظمة، لكن راجع المعاينة قبل التشغيل.")
+                .setView(content)
                 .setPositiveButton("تحليل وحفظ", null)
-                .setNeutralButton("مكتبة الصور", null)
                 .setNegativeButton("إلغاء", null)
                 .create();
         try {
             if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
             dialog.show();
+            settings.setOnClickListener(v -> {
+                String draft = input.getText().toString().trim();
+                if (pendingDraftSave[0] != null) { handler.removeCallbacks(pendingDraftSave[0]); pendingDraftSave[0] = null; }
+                saveCustomDraft(scriptId, stepId, draft);
+                dialog.dismiss();
+                BotnaAICompiler.showSettingsDialog(this, true, () -> {
+                    JSONObject refreshed = findStepById(BotnaStore.getScript(this, scriptId), stepId);
+                    editCustomInstructions(refreshed);
+                });
+            });
+            library.setOnClickListener(v -> {
+                String draft = input.getText().toString().trim();
+                if (pendingDraftSave[0] != null) { handler.removeCallbacks(pendingDraftSave[0]); pendingDraftSave[0] = null; }
+                saveCustomDraft(scriptId, stepId, draft);
+                dialog.dismiss(); showImageLibrary();
+            });
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 String command = input.getText().toString().trim();
-                if (command.isEmpty()) { report("اكتب أمرًا واحدًا على الأقل."); return; }
-                List<String> warnings = new ArrayList<>();
-                JSONArray compiled = compileCustomInstructions(command, warnings);
-                if (compiled.length() == 0) {
-                    report("لم أستطع تحويل النص إلى إجراء معروف. أضف رقم صورة من المكتبة أو فعلًا مثل انتظر/رجوع/اكتب/انقر نص.");
-                    Toast.makeText(this, getLastResult(), Toast.LENGTH_LONG).show();
-                    return;
+                if (pendingDraftSave[0] != null) { handler.removeCallbacks(pendingDraftSave[0]); pendingDraftSave[0] = null; }
+                if (command.isEmpty()) { report("اكتب الأمر في مربع النص أولًا، ثم اضغط تحليل وحفظ. النص الرمادي مثال توضيحي وليس أمرًا مكتوبًا."); return; }
+
+                // Persist the exact source text in its owning script before either compiler runs.
+                JSONObject owningScript = BotnaStore.getScript(this, scriptId);
+                JSONObject latest = findStepById(owningScript, stepId);
+                if (owningScript == null || latest == null) { report("لم يتم العثور على السكربت أو الخطوة المطلوب حفظها."); return; }
+                saveCustomDraft(scriptId, stepId, command);
+
+                Button saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                saveButton.setEnabled(false); saveButton.setText("جارٍ التحليل…");
+                report("جارٍ تحليل الأمر وحفظ نصه الأصلي…");
+                JSONArray librarySnapshot = BotnaStore.imageLibrary(this);
+                boolean useAI = BotnaAICompiler.isConfigured(this);
+                try {
+                    aiExecutor.execute(() -> {
+                        JSONArray compiled = new JSONArray();
+                        List<String> warnings = new ArrayList<>();
+                        String source = useAI ? "ai" : "local";
+                        String aiFailure = "";
+                        if (useAI) {
+                            try {
+                                JSONObject plan = BotnaAICompiler.compile(this, command, librarySnapshot);
+                                compiled = compileAIPlan(plan, librarySnapshot, warnings);
+                                if (compiled.length() == 0) throw new IllegalStateException("الخطة لم تحتوِ أوامر مدعومة.");
+                                JSONArray aiWarnings = plan.optJSONArray("warnings");
+                                if (aiWarnings != null) for (int i = 0; i < aiWarnings.length(); i++) {
+                                    String warning = aiWarnings.optString(i, "").trim(); if (!warning.isEmpty()) warnings.add(warning);
+                                }
+                                String structure = validateScriptStructure(compiled);
+                                if (structure != null) throw new IllegalStateException("بنية الخطة غير صالحة: " + structure);
+                            } catch (Exception e) {
+                                aiFailure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                                compiled = new JSONArray(); warnings.clear();
+                            }
+                        }
+                        if (compiled.length() == 0) {
+                            try {
+                                compiled = compileCustomInstructions(command, warnings);
+                                String localStructureError = validateScriptStructure(compiled);
+                                if (localStructureError != null) {
+                                    warnings.add("لم تُحفظ الخطة للتنفيذ لأن تركيب الشروط/التكرار غير صحيح: " + localStructureError);
+                                    compiled = new JSONArray();
+                                }
+                                source = "local";
+                                if (useAI && !aiFailure.isEmpty()) warnings.add("تعذر استخدام AI؛ استُخدم المحلّل المحلي كبديل: " + aiFailure);
+                                else if (!useAI) warnings.add("تم استخدام المحلّل المحلي. للأوامر الحرة والمعقدة، اضبط مفتاح API في إعدادات AI.");
+                            } catch (Exception e) {
+                                warnings.add("تعذر التحليل المحلي: " + e.getClass().getSimpleName());
+                            }
+                        }
+                        JSONArray finalCompiled = compiled;
+                        List<String> finalWarnings = new ArrayList<>(warnings);
+                        String finalSource = source;
+                        String finalAiFailure = aiFailure;
+                        handler.post(() -> {
+                            JSONObject targetScript = BotnaStore.getScript(this, scriptId);
+                            JSONObject target = findStepById(targetScript, stepId);
+                            if (targetScript == null || target == null) { report("تم حفظ النص، لكن تعذر العثور على السكربت أو الخطوة لإكمال الترجمة."); dialog.dismiss(); rebuildPanel(); return; }
+                            putString(target, "instructions", command);
+                            try {
+                                target.put("compiledSteps", finalCompiled);
+                                JSONArray wa = new JSONArray(); for (String warning : finalWarnings) wa.put(warning);
+                                target.put("compileWarnings", wa);
+                            } catch (JSONException ignored) { }
+                            if (finalCompiled.length() == 0) {
+                                putString(target, "label", "خطوة مخصصة — نص محفوظ، يحتاج ترجمة");
+                                BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
+                                dialog.dismiss(); rebuildPanel();
+                                report("حُفظ النص الأصلي كمسودة ولم يُحذف. لم ينتج التحليل خطوات آمنة قابلة للتنفيذ؛ راجع المكتبة أو إعدادات AI. " + (finalAiFailure.isEmpty() ? "" : "سبب AI: " + finalAiFailure));
+                                return;
+                            }
+                            putString(target, "label", "خطوة مخصصة • " + finalCompiled.length() + " أمر");
+                            BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
+                            dialog.dismiss(); rebuildPanel();
+                            StringBuilder message = new StringBuilder("تم حفظ النص وترجمته إلى ").append(finalCompiled.length()).append(" أمرًا.");
+                            if (!finalWarnings.isEmpty()) message.append(" توجد ").append(finalWarnings.size()).append(" تنبيهات؛ افتح معاينة الترجمة.");
+                            if ("local".equals(finalSource)) message.append(" (المحلّل المحلي)");
+                            report(message.toString());
+                            previewCustomCompilation(target);
+                        });
+                    });
+                } catch (Exception e) {
+                    saveButton.setEnabled(true); saveButton.setText("تحليل وحفظ");
+                    report("تعذر بدء التحليل. تم الاحتفاظ بالنص الأصلي.");
                 }
-                String structure = validateScriptStructure(compiled);
-                if (structure != null) { report("لا يمكن حفظ الأوامر: " + structure); Toast.makeText(this, getLastResult(), Toast.LENGTH_LONG).show(); return; }
-                putString(step, "instructions", command);
-                try { step.put("compiledSteps", compiled); step.put("compileWarnings", new JSONArray(warnings)); } catch (JSONException ignored) { }
-                putString(step, "label", "خطوة مخصصة • " + compiled.length() + " أمر");
-                BotnaStore.saveSteps(this, ensureScript(), BotnaStore.steps(ensureScript()));
-                report("تم تحليل وحفظ " + compiled.length() + " أمرًا." + (warnings.isEmpty() ? "" : " تنبيهات: " + warnings.size() + " — افتح معاينة الأوامر لمراجعتها."));
-                dialog.dismiss(); rebuildPanel();
             });
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> { dialog.dismiss(); showImageLibrary(); });
         } catch (Exception e) { report("تعذر فتح محرر الخطوة المخصصة."); }
     }
 
+    private String customDraftPreferenceKey(String scriptId, String stepId) {
+        return "custom_draft_v1_" + scriptId + "_" + stepId;
+    }
+
+    private void invalidateCustomCompilation(String scriptId, String stepId) {
+        JSONObject owningScript = BotnaStore.getScript(this, scriptId);
+        if (owningScript == null) return;
+        JSONObject step = findStepById(owningScript, stepId);
+        if (step == null) return;
+        putString(step, "label", "خطوة مخصصة — نص جديد، تحتاج تحليل");
+        try {
+            step.put("compiledSteps", new JSONArray());
+            step.put("compileWarnings", new JSONArray());
+        } catch (JSONException ignored) { }
+        BotnaStore.saveSteps(this, owningScript, BotnaStore.steps(owningScript));
+    }
+
+    private void saveCustomDraft(String scriptId, String stepId, String command) {
+        JSONObject owningScript = BotnaStore.getScript(this, scriptId);
+        if (owningScript == null) return;
+        JSONObject step = findStepById(owningScript, stepId);
+        if (step == null) return;
+        putString(step, "instructions", command == null ? "" : command);
+        putString(step, "label", command == null || command.trim().isEmpty()
+                ? "خطوة مخصصة — تحتاج إعدادًا" : "خطوة مخصصة — نص محفوظ، يحتاج تحليل");
+        try {
+            // Drafts never retain compiled output from an older source string.
+            step.put("compiledSteps", new JSONArray());
+            step.put("compileWarnings", new JSONArray());
+        } catch (JSONException ignored) { }
+        BotnaStore.saveSteps(this, owningScript, BotnaStore.steps(owningScript));
+        getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit()
+                .remove(customDraftPreferenceKey(scriptId, stepId)).apply();
+    }
+
+    private JSONArray compileAIPlan(JSONObject plan, JSONArray library, List<String> warnings) throws JSONException {
+        JSONArray output = new JSONArray();
+        JSONArray actions = plan == null ? null : plan.optJSONArray("steps");
+        if (actions == null) throw new JSONException("لا توجد قائمة خطوات في نتيجة AI.");
+        for (int i = 0; i < actions.length() && i < 200; i++) {
+            JSONObject action = actions.optJSONObject(i);
+            if (action == null) { warnings.add("تم تجاهل عنصر غير صالح رقم " + (i + 1)); continue; }
+            String name = normalizeArabicCommand(action.optString("action", "")).toLowerCase(Locale.ROOT).trim();
+            JSONObject step;
+            switch (name) {
+                case "find_image":
+                case "tap_image": {
+                    int imageIndex = action.optInt("image_index", action.optInt("imageIndex", 0));
+                    if (imageIndex < 1 || imageIndex > library.length()) { warnings.add("الخطوة " + (i + 1) + ": رقم صورة المكتبة غير صالح " + imageIndex); continue; }
+                    JSONObject image = library.optJSONObject(imageIndex - 1);
+                    if (image == null || image.optString("fileName", "").isEmpty()) { warnings.add("الخطوة " + (i + 1) + ": ملف صورة المكتبة غير متاح."); continue; }
+                    addLibraryImageStep(output, image, imageIndex, "tap_image".equals(name));
+                    step = output.optJSONObject(output.length() - 1);
+                    if (step != null) {
+                        putBoolean(step, "tapOnMatch", "tap_image".equals(name));
+                        putBoolean(step, "waitForImageOnly", "find_image".equals(name));
+                        putString(step, "label", ("tap_image".equals(name) ? "النقر على صورة المكتبة " : "العثور على صورة المكتبة ") + imageIndex + " • " + image.optString("name", "صورة"));
+                    }
+                    break;
+                }
+                case "wait": {
+                    int delay = clampInt(action.optInt("delay_ms", action.optInt("delay", 500)), 0, 60000);
+                    step = compiledStep(TYPE_WAIT, "انتظار " + delay + " ms"); putInt(step, "delay", delay); output.put(step); break;
+                }
+                case "tap_at": {
+                    int x = clampInt(action.optInt("x_percent", action.optInt("x", 50)), 0, 100);
+                    int y = clampInt(action.optInt("y_percent", action.optInt("y", 50)), 0, 100);
+                    step = compiledStep(TYPE_TAP, "نقر الموقع " + x + "%، " + y + "%"); putInt(step, "xPercent", x); putInt(step, "yPercent", y); output.put(step); break;
+                }
+                case "long_press_at": {
+                    int x = clampInt(action.optInt("x_percent", 50), 0, 100); int y = clampInt(action.optInt("y_percent", 50), 0, 100);
+                    int duration = clampInt(action.optInt("duration_ms", 800), 300, 5000);
+                    step = compiledStep(TYPE_LONG_PRESS, "ضغط مطول " + x + "%، " + y + "%"); putInt(step, "xPercent", x); putInt(step, "yPercent", y); putInt(step, "duration", duration); output.put(step); break;
+                }
+                case "click_text": {
+                    String value = action.optString("text", "").trim(); if (value.isEmpty()) { warnings.add("الخطوة " + (i + 1) + ": نص النقر فارغ."); continue; }
+                    step = compiledStep(TYPE_TEXT, "نقر نص: " + value); putString(step, "value", value); putInt(step, "retries", 2); output.put(step); break;
+                }
+                case "type_text": {
+                    String value = action.optString("text", ""); if (value.isEmpty()) { warnings.add("الخطوة " + (i + 1) + ": نص الكتابة فارغ."); continue; }
+                    step = compiledStep(TYPE_TYPE_TEXT, "كتابة نص: " + value); putString(step, "value", value); output.put(step); break;
+                }
+                case "scroll": {
+                    String direction = action.optString("direction", "up").toLowerCase(Locale.ROOT);
+                    if (!direction.equals("up") && !direction.equals("down") && !direction.equals("left") && !direction.equals("right")) direction = "up";
+                    step = compiledStep(TYPE_SCROLL, "تمرير " + direction); putString(step, "direction", direction); putInt(step, "duration", clampInt(action.optInt("duration_ms", 450), 100, 5000)); output.put(step); break;
+                }
+                case "back": addCompiled(output, TYPE_BACK, "رجوع"); break;
+                case "home": addCompiled(output, TYPE_HOME, "الرئيسية"); break;
+                case "if_success": addCompiled(output, TYPE_IF_SUCCESS, "إذا نجح الإجراء السابق"); break;
+                case "if_fail": addCompiled(output, TYPE_IF_FAIL, "إذا فشل الإجراء السابق"); break;
+                case "else": addCompiled(output, TYPE_ELSE, "وإلا"); break;
+                case "end_if": addCompiled(output, TYPE_END_IF, "نهاية الشرط"); break;
+                case "repeat_start":
+                    int count = clampInt(action.optInt("count", 2), 1, 1000); step = compiledStep(TYPE_REPEAT_START, "بدء تكرار ×" + count); putInt(step, "repeatCount", count); output.put(step); break;
+                case "repeat_end": addCompiled(output, TYPE_REPEAT_END, "نهاية التكرار"); break;
+                default: warnings.add("الخطوة " + (i + 1) + ": فعل غير مدعوم من مترجم AI: " + name); break;
+            }
+        }
+        if (actions.length() > 200) warnings.add("تم الاقتصار على أول 200 خطوة حمايةً من خطة مفرطة الطول.");
+        return output;
+    }
     private void previewCustomCompilation(JSONObject step) {
         JSONArray compiled = step.optJSONArray("compiledSteps");
         JSONArray warnings = step.optJSONArray("compileWarnings");
         StringBuilder text = new StringBuilder();
         text.append("النص الأصلي:\n").append(step.optString("instructions", "(فارغ)")).append("\n\nالأوامر المترجمة:\n");
-        if (compiled == null || compiled.length() == 0) text.append("لا توجد أوامر مترجمة.\n");
-        else for (int i=0; i<compiled.length(); i++) {
+        if (compiled == null || compiled.length() == 0) {
+            text.append("لا توجد أوامر مترجمة قابلة للتنفيذ. النص الأصلي محفوظ كمسودة إذا كُتب في المحرر.\n");
+        } else for (int i=0; i<compiled.length(); i++) {
             JSONObject child=compiled.optJSONObject(i);
             text.append(i+1).append(". ").append(child==null?"خطوة غير صالحة":child.optString("label", child.optString("type"))).append("\n");
         }
@@ -1024,8 +1368,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private JSONArray compileCustomInstructions(String original, List<String> warnings) {
         JSONArray result = new JSONArray();
         String clean = original.replace("\r", "\n");
-        // Natural sentence connectors define sequence. Structural phrases remain intact
-        // so custom scripts can express nested IF/ELSE and REPEAT blocks across lines.
+        // Preserve "ثم" within an inline image condition so every following action
+        // remains inside the IF block instead of being emitted after END_IF.
+        final String conditionalThenToken = "__botna_conditional_then__";
+        clean = clean.replaceAll("(?iu)((?:اذا|إذا)\\s+(?:وجدتها|وجدته|ظهرت|لقيتها|لم\\s+تجدها|لم\\s+تجده|ما\\s+لقيتها|لم\\s+تظهر).*?)\\s+ثم\\s+", "$1 " + conditionalThenToken + " ");
+        // Other sequence connectors split the natural-language request into actions.
         String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+ثم\\s+|\\s+بعد ذلك\\s+|\\s+بعدها\\s+");
         Deque<String> structure = new ArrayDeque<>();
         for (String raw : clauses) {
@@ -1063,19 +1410,16 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 boolean successCondition = norm.contains("اذا وجدتها") || norm.contains("اذا وجدته") || norm.contains("اذا ظهرت") || norm.contains("اذا لقيتها");
                 boolean failureCondition = norm.contains("اذا لم تجدها") || norm.contains("اذا لم تجده") || norm.contains("اذا ما لقيتها") || norm.contains("اذا لم تظهر");
                 boolean hasWait = norm.contains("انتظر") || norm.contains("توقف قليلا") || norm.contains("انتظار");
-                boolean suppressTap = norm.contains("بدون ضغط") || norm.contains("لا تضغط") || ((successCondition || failureCondition) && hasWait);
+                boolean hasConditionalAction = hasWait || norm.contains("رجوع") || norm.contains("الرئيسية") || norm.contains("اكتب") || norm.contains("نقر نص") || norm.contains("اضغط على نص") || norm.contains(conditionalThenToken);
+                boolean suppressTap = norm.contains("بدون ضغط") || norm.contains("لا تضغط") || ((successCondition || failureCondition) && hasConditionalAction);
                 addLibraryImageStep(result,image,number,!suppressTap);
-                if ((successCondition || failureCondition) && (hasWait || norm.contains("رجوع") || norm.contains("الرئيسية") || norm.contains("اكتب") || norm.contains("نقر نص") || norm.contains("اضغط على نص"))) {
+                if ((successCondition || failureCondition) && hasConditionalAction) {
                     addCompiled(result, failureCondition ? TYPE_IF_FAIL : TYPE_IF_SUCCESS,
                             failureCondition ? "إذا لم يُعثر على الصورة" : "إذا نجح العثور على الصورة");
                     structure.push("IF");
-                    if (hasWait) {
-                        int delay=parseDelayMs(norm);
-                        addCompiledInt(result,TYPE_WAIT,"انتظار "+delay+" ms","delay",delay);
-                    } else {
-                        String action=norm.replaceAll("(?iu).*?(?:اذا وجدتها|اذا وجدته|اذا ظهرت|اذا لقيتها|اذا لم تجدها|اذا لم تجده|اذا ما لقيتها|اذا لم تظهر)","").trim();
-                        if(!action.isEmpty()) parseCustomAction(action,result,warnings,lib);
-                    }
+                    String action = norm.replaceFirst("(?iu)^.*?(?:اذا\\s+وجدتها|اذا\\s+وجدته|اذا\\s+ظهرت|اذا\\s+لقيتها|اذا\\s+لم\\s+تجدها|اذا\\s+لم\\s+تجده|اذا\\s+ما\\s+لقيتها|اذا\\s+لم\\s+تظهر)", "").trim();
+                    String[] actions = action.split("(?iu)\\s*(?:" + conditionalThenToken + "|\\s+ثم\\s+|،|,)\\s*");
+                    for (String part : actions) if (!part.trim().isEmpty()) parseCustomAction(part.trim(), result, warnings, lib);
                     addCompiled(result,TYPE_END_IF,"نهاية الشرط"); structure.pop();
                 }
                 continue;
@@ -1113,7 +1457,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             addCompiledInt(result,TYPE_WAIT,"انتظار "+delay+" ms","delay",delay); return;
         }
         if (norm.contains("الرئيسية") || norm.contains("الشاشة الرئيسية") || norm.equals("home")) { addCompiled(result,TYPE_HOME,"الرئيسية"); return; }
-        if (norm.contains("رجوع") || norm.contains("للخلف") || norm.equals("back")) { addCompiled(result,TYPE_BACK,"رجوع"); return; }
+        if (norm.contains("رجوع") || norm.contains("ارجع") || norm.contains("للخلف") || norm.equals("back")) { addCompiled(result,TYPE_BACK,"رجوع"); return; }
         java.util.regex.Matcher longPress = java.util.regex.Pattern.compile("(?iu).*(?:ضغط\\s*مطول|اضغط\\s*مطولا|اضغط\\s*مطولاً|ضغط\\s*طويل)\\s*(?:على\\s*)?(?:موقع\\s*)?(\\d+)\\s*[,،]\\s*(\\d+)(?:\\s*(?:لمدة|مده)\\s*(\\d+)\\s*(?:ms|مللي\\s*ثانية|ثانية|ثواني)?)?.*").matcher(norm);
         if(longPress.matches()) {
             int x=clampInt(parseIntSafe(longPress.group(1),50),0,100), y=clampInt(parseIntSafe(longPress.group(2),50),0,100);
@@ -1881,30 +2225,70 @@ public class BotnaAccessibilityService extends AccessibilityService {
         removeView(runControls); runControls = null;
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER);
-        bar.setPadding(dp(7), dp(6), dp(7), dp(6));
-        bar.setBackground(glassShape(Color.argb(224, 8, 14, 24), Color.argb(235, 35, 226, 244), 1, 24));
-        bar.setElevation(dp(15));
-        Button pause = button(paused ? "▶ استكمال" : "Ⅱ مؤقت", true);
-        Button restart = button("↻ من البداية", false);
-        Button stop = button("■ إيقاف", false);
-        bar.addView(pause, new LinearLayout.LayoutParams(0, dp(40), 1));
-        bar.addView(restart, new LinearLayout.LayoutParams(0, dp(40), 1));
-        bar.addView(stop, new LinearLayout.LayoutParams(0, dp(40), 1));
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(3), dp(2), dp(3), dp(2));
+        bar.setBackground(glassShape(Color.argb(230, 8, 14, 24), Color.argb(235, 35, 226, 244), 1, 20));
+        bar.setElevation(dp(12));
+
+        TextView drag = label("⠿", 13, CYAN, true);
+        drag.setGravity(Gravity.CENTER);
+        drag.setContentDescription("اسحب لتحريك شريط التحكم");
+        bar.addView(drag, new LinearLayout.LayoutParams(dp(19), dp(27)));
+        Button pause = button(paused ? "▶" : "Ⅱ", true);
+        Button restart = button("↻", false);
+        Button stop = button("■", false);
+        pause.setTextSize(11); restart.setTextSize(11); stop.setTextSize(11);
+        pause.setContentDescription(paused ? "استكمال السكربت" : "إيقاف مؤقت");
+        restart.setContentDescription("إعادة التشغيل من البداية");
+        stop.setContentDescription("إيقاف نهائي");
+        LinearLayout.LayoutParams controlLp = new LinearLayout.LayoutParams(0, dp(27), 1);
+        bar.addView(pause, controlLp);
+        LinearLayout.LayoutParams restartLp = new LinearLayout.LayoutParams(0, dp(27), 1); restartLp.setMargins(dp(2), 0, 0, 0); bar.addView(restart, restartLp);
+        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(0, dp(27), 1); stopLp.setMargins(dp(2), 0, 0, 0); bar.addView(stop, stopLp);
         pause.setOnClickListener(v -> { if (paused) resumeScript(); else pauseScript(); });
         restart.setOnClickListener(v -> restartScript());
         stop.setOnClickListener(v -> stopScript());
-        int width = Math.min(getResources().getDisplayMetrics().widthPixels - dp(20), dp(350));
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(width, dp(58),
+
+        int width = Math.max(dp(150), Math.min(dp(238), getResources().getDisplayMetrics().widthPixels - dp(12)));
+        int height = dp(34);
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(width, height,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-        params.y = dp(86);
-        try { wm.addView(bar, params); runControls = bar; }
+        params.gravity = Gravity.TOP | Gravity.START;
+        android.util.DisplayMetrics metrics = realScreenMetrics();
+        android.content.SharedPreferences prefs = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE);
+        params.x = clampInt(prefs.getInt("run_controls_x", Math.max(dp(6), (metrics.widthPixels - width) / 2)), 0, Math.max(0, metrics.widthPixels - width));
+        params.y = clampInt(prefs.getInt("run_controls_y", Math.max(dp(40), metrics.heightPixels - height - dp(92))), 0, Math.max(0, metrics.heightPixels - height));
+
+        final float[] down = new float[2];
+        final int[] origin = new int[2];
+        final boolean[] dragged = new boolean[1];
+        drag.setOnTouchListener((v, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    down[0] = event.getRawX(); down[1] = event.getRawY();
+                    origin[0] = params.x; origin[1] = params.y; dragged[0] = false;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    float dx = event.getRawX() - down[0]; float dy = event.getRawY() - down[1];
+                    if (Math.abs(dx) + Math.abs(dy) > dp(3)) dragged[0] = true;
+                    if (dragged[0]) {
+                        params.x = clampInt(origin[0] + Math.round(dx), 0, Math.max(0, metrics.widthPixels - width));
+                        params.y = clampInt(origin[1] + Math.round(dy), 0, Math.max(0, metrics.heightPixels - height));
+                        try { wm.updateViewLayout(bar, params); } catch (Exception ignored) { }
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (dragged[0]) getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit()
+                            .putInt("run_controls_x", params.x).putInt("run_controls_y", params.y).apply();
+                    return true;
+            }
+            return true;
+        });
+        try { wm.addView(bar, params); runControls = bar; runControlsParams = params; }
         catch (Exception e) { saveResult("تعذر إظهار أزرار التحكم أثناء التشغيل."); }
     }
-
     private void runStep() {
         if (!running) return;
         if (paused) { executionInFlight = false; showRunControls(); return; }
@@ -2257,10 +2641,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 if (matchError != null) {
                     retryImageOrFinish(step, attempt, generation, callback, false, "تعذر تشغيل محرك المطابقة: " + matchError); return;
                 }
-                boolean matched = match != null && match.score >= step.optInt("threshold", 85);
+                int requiredThreshold = match == null ? step.optInt("threshold", 85) : thresholdForTemplate(step, match.templateName);
+                boolean matched = match != null && match.score >= requiredThreshold;
                 if (!matched) {
                     retryImageOrFinish(step, attempt, generation, callback, false,
-                            "لم يتحقق تطابق الصورة. أفضل نتيجة " + (match == null ? 0 : match.score) + "% (المطلوب " + step.optInt("threshold",85) + "%).");
+                            "لم يتحقق تطابق الصورة. أفضل نتيجة " + (match == null ? 0 : match.score) + "% (المطلوب " + requiredThreshold + "%).",
+                            match == null ? null : match.templateName);
                     return;
                 }
                 if (!step.optBoolean("tapOnMatch", true)) {
@@ -2276,11 +2662,15 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void retryImageOrFinish(JSONObject step, int attempt, int generation, ActionResultCallback callback, boolean unused, String message) {
+        retryImageOrFinish(step, attempt, generation, callback, unused, message, null);
+    }
+
+    private void retryImageOrFinish(JSONObject step, int attempt, int generation, ActionResultCallback callback, boolean unused, String message, String templateName) {
         if (running && paused) { executionInFlight = false; showRunControls(); return; }
-        int retries = Math.max(1, Math.min(10, step.optInt("retries", 1)));
+        int retries = templateName == null ? Math.max(1, Math.min(10, step.optInt("retries", 1))) : retriesForTemplate(step, templateName);
         if (attempt + 1 < retries) {
             report(message + " إعادة المحاولة " + (attempt + 2) + "/" + retries + "…");
-            int delay = Math.max(100, Math.min(10000, step.optInt("retryDelay", 500)));
+            int delay = templateName == null ? Math.max(100, Math.min(10000, step.optInt("retryDelay", 500))) : retryDelayForTemplate(step, templateName);
             if (running) showRunControls();
             handler.postDelayed(() -> runImageMatch(step, attempt + 1, generation, callback), delay);
         } else callback.done(false, message + " انتهت المحاولات (" + retries + ").");
@@ -2308,13 +2698,21 @@ public class BotnaAccessibilityService extends AccessibilityService {
         JSONArray images = step.optJSONArray("images");
         if (images == null || images.length() == 0 || screen == null || screen.isRecycled()) return null;
         List<ImageMatcher.NamedBitmap> templates = new ArrayList<>();
+        Map<String, Integer> thresholds = new HashMap<>();
         Bitmap searchBitmap = screen;
         boolean croppedSearch = false;
         int offsetX = 0, offsetY = 0;
         for (int i = 0; i < images.length(); i++) {
-            String name = images.optString(i); Bitmap bitmap = readTemplate(name);
-            if (bitmap != null) templates.add(new ImageMatcher.NamedBitmap(name, bitmap));
+            String name = images.optString(i);
+            JSONObject angleSettings = findImageAngleSettings(step, name);
+            if (angleSettings != null && !angleSettings.optBoolean("enabled", true)) continue;
+            Bitmap bitmap = readTemplate(name);
+            if (bitmap != null) {
+                templates.add(new ImageMatcher.NamedBitmap(name, bitmap));
+                thresholds.put(name, thresholdForTemplate(step, name));
+            }
         }
+        if (templates.isEmpty()) return null;
         try {
             String searchMode = step.optString("searchRegionMode", "full");
             if ("custom".equals(searchMode) || "original".equals(searchMode)) {
@@ -2330,7 +2728,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 searchBitmap = Bitmap.createBitmap(screen, x, y, w, h);
                 croppedSearch = true; offsetX = x; offsetY = y;
             }
-            ImageMatcher.Result result = ImageMatcher.find(searchBitmap, templates, step.optInt("threshold", 85));
+            ImageMatcher.Result result = ImageMatcher.find(searchBitmap, templates, step.optInt("threshold", 85), thresholds);
             if (result == null || !croppedSearch) return result;
             return new ImageMatcher.Result(result.score, result.x + offsetX, result.y + offsetY,
                     result.width, result.height, result.templateName);
@@ -2339,7 +2737,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
             for (ImageMatcher.NamedBitmap item : templates) if (item.bitmap != null && !item.bitmap.isRecycled()) item.bitmap.recycle();
         }
     }
-
     private void captureAppScreenshot(ScreenshotCallback callback) {
         if (Build.VERSION.SDK_INT < 30) { callback.done(null, "يتطلب Android 11 أو أحدث"); return; }
         boolean wasPanel = panelVisible;
