@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -71,6 +73,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private static final String TYPE_TYPE_TEXT = "TYPE_TEXT";
     private static final String TYPE_REPEAT_START = "REPEAT_START";
     private static final String TYPE_REPEAT_END = "REPEAT_END";
+    private static final String TYPE_CUSTOM = "CUSTOM";
+
+    private static final int CROP_TARGET = 0;
+    private static final int CROP_SEARCH_REGION = 1;
+    private static final int CROP_LIBRARY_IMAGE = 2;
+    private static final int CROP_LIBRARY_SEARCH_REGION = 3;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService matcherExecutor = Executors.newSingleThreadExecutor();
@@ -80,6 +88,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private View runControls;
     private ScrollView panelScrollView;
     private CropSelector cropSelector;
+    private PointSelector pointSelector;
     private WindowManager.LayoutParams bubbleParams;
     private WindowManager.LayoutParams panelParams;
     private boolean panelVisible;
@@ -100,6 +109,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private String cropStepId = "";
     private boolean replaceImageTarget;
     private boolean cropCreatedNewStep;
+    private int cropPurpose = CROP_TARGET;
+    private String libraryPendingName = "";
+    private String libraryReplaceId = "";
+    private String activeLibraryId = "";
+    private String activePointStepId = "";
+    private JSONArray executionSteps = new JSONArray();
+    private boolean customTestMode;
     private TextView resultLabel;
     private LinearLayout stepList;
     private int lastActionResult = 0;
@@ -121,8 +137,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         removeView(panel);
         removeView(runControls);
         removeView(cropSelector);
+        removeView(pointSelector);
         removeView(bubble);
-        panel = null; runControls = null; cropSelector = null; bubble = null;
+        panel = null; runControls = null; cropSelector = null; pointSelector = null; bubble = null;
         panelVisible = false;
         running = false; paused = false; executionGeneration++;
         currentBranches.clear(); currentLoops.clear();
@@ -193,16 +210,22 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         LinearLayout header = horizontal();
         TextView title = label("BOTNA  •  الأتمتة الذكية", 16, TEXT, true);
+        title.setTextSize(13);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
+        Button hideList = button("إخفاء القائمة", false);
+        hideList.setTextSize(11);
+        hideList.setContentDescription("إخفاء القائمة والعودة إلى الزر العائم");
+        hideList.setOnClickListener(v -> { hidePanel(); showBubble(); });
+        header.addView(hideList, new LinearLayout.LayoutParams(dp(82), dp(42)));
         Button saveClose = button("حفظ", false);
         saveClose.setContentDescription("حفظ السكربت وإغلاق لوحة الأتمتة");
         saveClose.setOnClickListener(v -> confirmSaveAndClose());
-        header.addView(saveClose, new LinearLayout.LayoutParams(dp(66), dp(42)));
+        header.addView(saveClose, new LinearLayout.LayoutParams(dp(50), dp(42)));
         Button close = button("×", false);
         close.setTextSize(20);
         close.setContentDescription("إغلاق لوحة الأتمتة بعد تأكيد الحفظ");
         close.setOnClickListener(v -> confirmSaveAndClose());
-        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(38), dp(42));
+        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(34), dp(42));
         closeLp.setMargins(dp(4), 0, 0, 0);
         header.addView(close, closeLp);
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(42)));
@@ -293,17 +316,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
         content.addView(addRow3, add3Lp);
 
         LinearLayout addRow4 = horizontal();
-        addButton(addRow4, "نقر موقع", () -> promptText("موقع النقر كنسبة مئوية x,y (مثال 50,50)", "50,50", value -> {
-            String[] xy = value.split(",");
-            if (xy.length != 2) { report("اكتب إحداثيين بهذا الشكل: 50,50"); return; }
-            try {
-                int x = Math.max(0, Math.min(100, Integer.parseInt(xy[0].trim())));
-                int y = Math.max(0, Math.min(100, Integer.parseInt(xy[1].trim())));
-                JSONObject step = addStep(TYPE_TAP, "نقر الموقع " + x + "%، " + y + "%");
-                putInt(step, "xPercent", x); putInt(step, "yPercent", y);
-                saveStepObject(step); rebuildPanel();
-            } catch (NumberFormatException ex) { report("الإحداثيات يجب أن تكون أرقامًا من 0 إلى 100."); }
-        }));
+        addButton(addRow4, "نقر موقع", () -> {
+            JSONObject step = addStep(TYPE_TAP, "نقر موقع — حدد النقطة");
+            putInt(step, "xPercent", 50); putInt(step, "yPercent", 50);
+            saveStepObject(step);
+            openPointSelector(step);
+        });
         addButton(addRow4, "سحب الشاشة", () -> promptText("السحب: x1,y1,x2,y2 كنسب مئوية", "50,75,50,25", value -> {
             String[] xy = value.split(",");
             if (xy.length != 4) { report("اكتب أربع قيم مثل 50,75,50,25"); return; }
@@ -327,12 +345,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
             putString(step, "value", value); saveStepObject(step); rebuildPanel();
         }));
         addButton(addRow5, "انتظار صورة", () -> {
-            JSONObject step = addStep(TYPE_IMAGE, "انتظار/مطابقة صورة");
-            putBoolean(step, "tapOnMatch", false);
-            putBoolean(step, "waitForImageOnly", true);
-            putInt(step, "retries", 3);
+            JSONObject step = addStep(TYPE_IMAGE, "انتظار ظهور صورة");
+            initializeImageStepDefaults(step, true);
             cropStepId = step.optString("id"); cropCreatedNewStep = true;
-            saveStepObject(step); rebuildPanel(); beginCaptureForCrop();
+            cropPurpose = CROP_TARGET; replaceImageTarget = false;
+            saveStepObject(step); beginCaptureForCrop();
         });
         addButton(addRow5, "تأخير عشوائي", () -> promptText("أدنى وأقصى انتظار بالمللي ثانية (min,max)", "500,1200", value -> {
             String[] limits = value.split(",");
@@ -378,6 +395,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
             promptNumber("رقم الخطوة للاختبار", current.length(), 1, current.length(), number -> testStep(number - 1));
         });
         LinearLayout.LayoutParams add7Lp = wrap(); add7Lp.topMargin = dp(5); content.addView(addRow7, add7Lp);
+
+        LinearLayout addRow8 = horizontal();
+        addButton(addRow8, "＋ خطوة مخصصة", this::addCustomStep);
+        addButton(addRow8, "مكتبة الصور", this::showImageLibrary);
+        LinearLayout.LayoutParams add8Lp = wrap(); add8Lp.topMargin = dp(5); content.addView(addRow8, add8Lp);
 
         LinearLayout runRow = horizontal();
         Button run = button("▶ تشغيل", true);
@@ -660,22 +682,36 @@ public class BotnaAccessibilityService extends AccessibilityService {
         JSONObject script = ensureScript(); JSONArray steps = BotnaStore.steps(script);
         JSONObject step = steps.optJSONObject(index); if (step == null) return;
         String type = step.optString("type");
+        if (TYPE_CUSTOM.equals(type)) {
+            showChoice("إعدادات الخطوة المخصصة", new String[]{"كتابة/تعديل الأمر العربي", "مكتبة الصور", "عرض الأوامر المترجمة", "اختبار الخطوة", step.optBoolean("enabled", true) ? "تعطيل الخطوة" : "تفعيل الخطوة", "حذف الخطوة"}, choice -> {
+                if (choice == 0) editCustomInstructions(step);
+                else if (choice == 1) showImageLibrary();
+                else if (choice == 2) previewCustomCompilation(step);
+                else if (choice == 3) testStep(index);
+                else if (choice == 4) toggleStep(script, step);
+                else confirmDeleteStep(index);
+            });
+            return;
+        }
         if (TYPE_IMAGE.equals(type)) {
             String[] options = new String[]{
-                    "عرض الزوايا المحفوظة", "تغيير الهدف الحالي", "قص زاوية إضافية",
-                    "تعديل نسبة التطابق", "إعدادات المطابقة المتقدمة", "اختبار الخطوة الآن",
+                    "عرض الزوايا المحفوظة", "تغيير الهدف الحالي", "قص زاوية إضافية لهذه الخطوة",
+                    "قص هدف جديد كخطوة مستقلة", "تعديل نسبة التطابق", "منطقة البحث",
+                    "إعدادات المطابقة المتقدمة", "اختبار الخطوة الآن",
                     step.optBoolean("enabled", true) ? "تعطيل الخطوة" : "تفعيل الخطوة", "حذف الخطوة"
             };
             showChoice("إعدادات خطوة الصورة", options, choice -> {
                 if (choice == 0) showImageAngles(script, step, index);
                 else if (choice == 1) changeImageTarget(script, step);
-                else if (choice == 2) { cropStepId = step.optString("id"); cropCreatedNewStep = false; replaceImageTarget = false; beginCaptureForCrop(); }
-                else if (choice == 3) promptNumber("نسبة التطابق المطلوبة (50–99)", step.optInt("threshold", 85), 50, 99, value -> {
+                else if (choice == 2) prepareCropAngle(step);
+                else if (choice == 3) prepareCropStep();
+                else if (choice == 4) promptNumber("نسبة التطابق المطلوبة (50–99)", step.optInt("threshold", 85), 50, 99, value -> {
                     putInt(step, "threshold", value); BotnaStore.saveSteps(this, script, steps); rebuildPanel();
                 });
-                else if (choice == 4) editImageAdvancedSettings(script, step, steps);
-                else if (choice == 5) testStep(index);
-                else if (choice == 6) { putBoolean(step, "enabled", !step.optBoolean("enabled", true)); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); }
+                else if (choice == 5) editSearchRegion(script, step);
+                else if (choice == 6) editImageAdvancedSettings(script, step, steps);
+                else if (choice == 7) testStep(index);
+                else if (choice == 8) { putBoolean(step, "enabled", !step.optBoolean("enabled", true)); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); }
                 else confirmDeleteStep(index);
             });
             return;
@@ -708,14 +744,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 else confirmDeleteStep(index);
             });
         } else if (TYPE_TAP.equals(type)) {
-            showChoice("إعدادات النقر بالموقع", new String[]{"تغيير الإحداثيات", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
-                if (choice == 0) promptText("x,y كنسب مئوية من الشاشة", step.optInt("xPercent", 50) + "," + step.optInt("yPercent", 50), value -> {
-                    String[] xy = value.split(","); try { if (xy.length != 2) throw new NumberFormatException(); putInt(step, "xPercent", Math.max(0, Math.min(100, Integer.parseInt(xy[0].trim())))); putInt(step, "yPercent", Math.max(0, Math.min(100, Integer.parseInt(xy[1].trim())))); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); } catch (NumberFormatException ex) { report("أدخل إحداثيين صحيحين مثل 50,50."); }
-                });
-                else if (choice == 1) promptNumber("انتظار قبل الخطوة (مللي ثانية)", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
-                else if (choice == 2) promptNumber("انتظار بعد التنفيذ (مللي ثانية)", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
-                else if (choice == 3) testStep(index);
-                else if (choice == 4) toggleStep(script, step);
+            showChoice("إعدادات النقر بالموقع", new String[]{"تحديد النقطة على الشاشة", "نسخ الإحداثيات الحالية", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) openPointSelector(step);
+                else if (choice == 1) copyCoordinates(step.optInt("xPercent", 50), step.optInt("yPercent", 50));
+                else if (choice == 2) promptNumber("انتظار قبل الخطوة (مللي ثانية)", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
+                else if (choice == 3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
+                else if (choice == 4) testStep(index);
+                else if (choice == 5) toggleStep(script, step);
                 else confirmDeleteStep(index);
             });
         } else if (TYPE_LONG_PRESS.equals(type)) {
@@ -790,6 +825,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         // Keep the old target intact until the user successfully crops a replacement.
         cropStepId = step.optString("id");
         cropCreatedNewStep = false;
+        cropPurpose = CROP_TARGET;
         replaceImageTarget = true;
         beginCaptureForCrop();
     }
@@ -817,7 +853,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         ScrollView scroller = new ScrollView(this); scroller.addView(list);
         List<Bitmap> loaded = new ArrayList<>();
         if (images == null || images.length() == 0) {
-            list.addView(label("لا توجد زوايا محفوظة. استخدم «قص زاوية إضافية» لإضافتها.", 14, MUTED, false));
+            list.addView(label("لا توجد زوايا محفوظة في هذه الخطوة. استخدم «تغيير الهدف الحالي» لاستبدالها أو «قص هدف جديد» لإضافة خطوة مستقلة.", 14, MUTED, false));
         } else {
             for (int i = 0; i < images.length(); i++) {
                 final int angleIndex = i;
@@ -904,29 +940,494 @@ public class BotnaAccessibilityService extends AccessibilityService {
         catch (Exception e) { Toast.makeText(this, "تعذر فتح قائمة الخيارات", Toast.LENGTH_LONG).show(); }
     }
 
-    // ---------------- Screenshot crop with transparent resizable frame ----------------
-    private void prepareCropStep() {
-        JSONObject script = ensureScript(); JSONArray steps = BotnaStore.steps(script); JSONObject target = null;
-        // All target crops belong to the first image step; never create a separate
-        // step merely to add another angle to an existing target.
-        for (int i = 0; i < steps.length(); i++) {
-            JSONObject item = steps.optJSONObject(i);
-            if (item != null && TYPE_IMAGE.equals(item.optString("type"))
-                    && !item.optBoolean("waitForImageOnly", false)) {
-                target = item;
-                break;
+    // ---------------- Custom-step editor, Arabic command compiler and image library ----------------
+    private void addCustomStep() {
+        JSONObject step = addStep(TYPE_CUSTOM, "خطوة مخصصة — تحتاج إعدادًا");
+        putString(step, "instructions", "");
+        try { step.put("compiledSteps", new JSONArray()); } catch (JSONException ignored) { }
+        saveStepObject(step);
+        rebuildPanel();
+        editCustomInstructions(step);
+    }
+
+    private void editCustomInstructions(JSONObject step) {
+        EditText input = new EditText(this);
+        input.setText(step.optString("instructions", ""));
+        input.setSingleLine(false); input.setMinLines(5); input.setMaxLines(12);
+        input.setGravity(Gravity.TOP | Gravity.START);
+        input.setTextSize(15); input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        input.setTextColor(TEXT); input.setHintTextColor(MUTED);
+        input.setHint("مثال: تابع صورة رقم 4 بالمكتبة، إذا وجدتها انتظر ثانيتين ثم ارجع");
+        input.setBackground(glassShape(Color.rgb(8, 14, 22), CYAN, 1, 12));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("اكتب الأمر بالعربية")
+                .setMessage("سيحوّل محلّل الأوامر المحلي النص إلى خطوات قابلة للتنفيذ. ستظهر تنبيهات لأي عبارة لم يفهمها بدل تجاهلها بصمت.")
+                .setView(input)
+                .setPositiveButton("تحليل وحفظ", null)
+                .setNeutralButton("مكتبة الصور", null)
+                .setNegativeButton("إلغاء", null)
+                .create();
+        try {
+            if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
+            dialog.show();
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String command = input.getText().toString().trim();
+                if (command.isEmpty()) { report("اكتب أمرًا واحدًا على الأقل."); return; }
+                List<String> warnings = new ArrayList<>();
+                JSONArray compiled = compileCustomInstructions(command, warnings);
+                if (compiled.length() == 0) {
+                    report("لم أستطع تحويل النص إلى إجراء معروف. أضف رقم صورة من المكتبة أو فعلًا مثل انتظر/رجوع/اكتب/انقر نص.");
+                    Toast.makeText(this, getLastResult(), Toast.LENGTH_LONG).show();
+                    return;
+                }
+                String structure = validateScriptStructure(compiled);
+                if (structure != null) { report("لا يمكن حفظ الأوامر: " + structure); Toast.makeText(this, getLastResult(), Toast.LENGTH_LONG).show(); return; }
+                putString(step, "instructions", command);
+                try { step.put("compiledSteps", compiled); step.put("compileWarnings", new JSONArray(warnings)); } catch (JSONException ignored) { }
+                putString(step, "label", "خطوة مخصصة • " + compiled.length() + " أمر");
+                BotnaStore.saveSteps(this, ensureScript(), BotnaStore.steps(ensureScript()));
+                report("تم تحليل وحفظ " + compiled.length() + " أمرًا." + (warnings.isEmpty() ? "" : " تنبيهات: " + warnings.size() + " — افتح معاينة الأوامر لمراجعتها."));
+                dialog.dismiss(); rebuildPanel();
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> { dialog.dismiss(); showImageLibrary(); });
+        } catch (Exception e) { report("تعذر فتح محرر الخطوة المخصصة."); }
+    }
+
+    private void previewCustomCompilation(JSONObject step) {
+        JSONArray compiled = step.optJSONArray("compiledSteps");
+        JSONArray warnings = step.optJSONArray("compileWarnings");
+        StringBuilder text = new StringBuilder();
+        text.append("النص الأصلي:\n").append(step.optString("instructions", "(فارغ)")).append("\n\nالأوامر المترجمة:\n");
+        if (compiled == null || compiled.length() == 0) text.append("لا توجد أوامر مترجمة.\n");
+        else for (int i=0; i<compiled.length(); i++) {
+            JSONObject child=compiled.optJSONObject(i);
+            text.append(i+1).append(". ").append(child==null?"خطوة غير صالحة":child.optString("label", child.optString("type"))).append("\n");
+        }
+        if (warnings != null && warnings.length()>0) {
+            text.append("\nعبارات لم تُفهم بالكامل:\n");
+            for(int i=0;i<warnings.length();i++) text.append("• ").append(warnings.optString(i)).append("\n");
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("معاينة الترجمة البرمجية").setMessage(text.toString()).setPositiveButton("حسنًا",null).create();
+        try { if (dialog.getWindow()!=null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
+        catch(Exception e) { report("تعذر عرض معاينة الأوامر."); }
+    }
+
+    private String normalizeArabicCommand(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        value = value.replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ى','ي');
+        String arabicDigits="٠١٢٣٤٥٦٧٨٩";
+        for(int i=0;i<arabicDigits.length();i++) value=value.replace(arabicDigits.charAt(i),(char)('0'+i));
+        value=value.replaceAll("[\\u064B-\\u065F\\u0670]", "");
+        return value;
+    }
+
+    private JSONArray compileCustomInstructions(String original, List<String> warnings) {
+        JSONArray result = new JSONArray();
+        String clean = original.replace("\r", "\n");
+        // Natural sentence connectors define sequence. Structural phrases remain intact
+        // so custom scripts can express nested IF/ELSE and REPEAT blocks across lines.
+        String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+ثم\\s+|\\s+بعد ذلك\\s+|\\s+بعدها\\s+");
+        Deque<String> structure = new ArrayDeque<>();
+        for (String raw : clauses) {
+            String clause = raw.trim(); if (clause.isEmpty()) continue;
+            String norm = normalizeArabicCommand(clause);
+            if (norm.equals("وإلا") || norm.equals("والا") || norm.equals("و الا")) {
+                if (structure.isEmpty() || !"IF".equals(structure.peek())) warnings.add("وإلا بلا شرط مفتوح: " + clause);
+                else addCompiled(result, TYPE_ELSE, "وإلا");
+                continue;
+            }
+            if (norm.contains("نهاية الشرط") || norm.equals("اغلق الشرط")) {
+                if (structure.isEmpty() || !"IF".equals(structure.peek())) warnings.add("نهاية شرط بلا بداية: " + clause);
+                else { addCompiled(result, TYPE_END_IF, "نهاية الشرط"); structure.pop(); }
+                continue;
+            }
+            if (norm.contains("نهاية التكرار") || norm.contains("انهي التكرار")) {
+                if (structure.isEmpty() || !"REPEAT".equals(structure.peek())) warnings.add("نهاية تكرار بلا بداية: " + clause);
+                else { addCompiled(result, TYPE_REPEAT_END, "نهاية التكرار"); structure.pop(); }
+                continue;
+            }
+            java.util.regex.Matcher repeat = java.util.regex.Pattern.compile("(?iu)^\\s*كرر\\s*(\\d+)\\s*(?:مرة|مرات|تكرار)?\\s*[:：]?\\s*(.*)$").matcher(norm);
+            if (repeat.matches()) {
+                int count=clampInt(parseIntSafe(repeat.group(1),2),1,1000);
+                addCompiledInt(result,TYPE_REPEAT_START,"بدء تكرار ×"+count,"repeatCount",count); structure.push("REPEAT");
+                String rest=repeat.group(2).trim(); if(rest.isEmpty()) continue; norm=rest; clause=rest;
+            }
+            // Inline image-success instruction, e.g. "تابع صورة رقم 4 بالمكتبة إذا وجدتها انتظر ثانيتين".
+            java.util.regex.Matcher imageRef = java.util.regex.Pattern.compile("(?iu)(?:صورة|الهدف)\\s*(?:رقم\\s*)?(\\d+)").matcher(norm);
+            if (imageRef.find()) {
+                int number=parseIntSafe(imageRef.group(1),-1);
+                JSONArray lib=BotnaStore.imageLibrary(this);
+                if(number<1 || number>lib.length()) { warnings.add("رقم صورة غير موجود في المكتبة: "+number); continue; }
+                JSONObject image=lib.optJSONObject(number-1);
+                if(image==null) { warnings.add("تعذر قراءة صورة المكتبة رقم "+number); continue; }
+                boolean successCondition = norm.contains("اذا وجدتها") || norm.contains("اذا وجدته") || norm.contains("اذا ظهرت") || norm.contains("اذا لقيتها");
+                boolean failureCondition = norm.contains("اذا لم تجدها") || norm.contains("اذا لم تجده") || norm.contains("اذا ما لقيتها") || norm.contains("اذا لم تظهر");
+                boolean hasWait = norm.contains("انتظر") || norm.contains("توقف قليلا") || norm.contains("انتظار");
+                boolean suppressTap = norm.contains("بدون ضغط") || norm.contains("لا تضغط") || ((successCondition || failureCondition) && hasWait);
+                addLibraryImageStep(result,image,number,!suppressTap);
+                if ((successCondition || failureCondition) && (hasWait || norm.contains("رجوع") || norm.contains("الرئيسية") || norm.contains("اكتب") || norm.contains("نقر نص") || norm.contains("اضغط على نص"))) {
+                    addCompiled(result, failureCondition ? TYPE_IF_FAIL : TYPE_IF_SUCCESS,
+                            failureCondition ? "إذا لم يُعثر على الصورة" : "إذا نجح العثور على الصورة");
+                    structure.push("IF");
+                    if (hasWait) {
+                        int delay=parseDelayMs(norm);
+                        addCompiledInt(result,TYPE_WAIT,"انتظار "+delay+" ms","delay",delay);
+                    } else {
+                        String action=norm.replaceAll("(?iu).*?(?:اذا وجدتها|اذا وجدته|اذا ظهرت|اذا لقيتها|اذا لم تجدها|اذا لم تجده|اذا ما لقيتها|اذا لم تظهر)","").trim();
+                        if(!action.isEmpty()) parseCustomAction(action,result,warnings,lib);
+                    }
+                    addCompiled(result,TYPE_END_IF,"نهاية الشرط"); structure.pop();
+                }
+                continue;
+            }
+            if (norm.startsWith("اذا نجح") || norm.startsWith("اذا وجدت") || norm.startsWith("اذا تحقق")) {
+                addCompiled(result,TYPE_IF_SUCCESS,"إذا نجح الإجراء السابق"); structure.push("IF");
+                String rest=norm.replaceFirst("(?iu)^اذا\\s+(?:نجح|وجدت(?:ها|ه)?|تحقق)(?:\\s+الاجراء السابق)?\\s*[:：]?\\s*","").trim();
+                if(!rest.isEmpty()) parseCustomAction(rest,result,warnings,BotnaStore.imageLibrary(this));
+                continue;
+            }
+            if (norm.startsWith("اذا فشل") || norm.startsWith("اذا لم تجد") || norm.startsWith("اذا لم تظهر")) {
+                addCompiled(result,TYPE_IF_FAIL,"إذا فشل الإجراء السابق"); structure.push("IF");
+                String rest=norm.replaceFirst("(?iu)^اذا\\s+(?:فشل|لم\\s+(?:تجد|تظهر))(?:\\s+الاجراء السابق)?\\s*[:：]?\\s*","").trim();
+                if(!rest.isEmpty()) parseCustomAction(rest,result,warnings,BotnaStore.imageLibrary(this));
+                continue;
+            }
+            if (norm.equals("اذا نجح") || norm.equals("اذا فشل")) {
+                addCompiled(result,norm.contains("فشل")?TYPE_IF_FAIL:TYPE_IF_SUCCESS,norm); structure.push("IF"); continue;
+            }
+            parseCustomAction(norm,result,warnings,BotnaStore.imageLibrary(this));
+        }
+        while(!structure.isEmpty()) {
+            String kind=structure.pop();
+            if("IF".equals(kind)) { addCompiled(result,TYPE_END_IF,"نهاية شرط أُكملت تلقائيًا"); warnings.add("أُغلقت كتلة شرط مفتوحة تلقائيًا في نهاية الخطوة المخصصة."); }
+            else { addCompiled(result,TYPE_REPEAT_END,"نهاية تكرار أُكملت تلقائيًا"); warnings.add("أُغلقت كتلة تكرار مفتوحة تلقائيًا في نهاية الخطوة المخصصة."); }
+        }
+        return result;
+    }
+
+    private void parseCustomAction(String norm, JSONArray result, List<String> warnings, JSONArray library) {
+        if (norm == null || norm.trim().isEmpty()) return;
+        if (norm.contains("نهاية الشرط") || norm.contains("نهاية التكرار")) { warnings.add("استخدم علامة نهاية الشرط/التكرار في سطر مستقل: "+norm); return; }
+        if (norm.contains("انتظر") || norm.contains("انتظار") || norm.contains("توقف قليلا")) {
+            int delay=parseDelayMs(norm);
+            addCompiledInt(result,TYPE_WAIT,"انتظار "+delay+" ms","delay",delay); return;
+        }
+        if (norm.contains("الرئيسية") || norm.contains("الشاشة الرئيسية") || norm.equals("home")) { addCompiled(result,TYPE_HOME,"الرئيسية"); return; }
+        if (norm.contains("رجوع") || norm.contains("للخلف") || norm.equals("back")) { addCompiled(result,TYPE_BACK,"رجوع"); return; }
+        java.util.regex.Matcher longPress = java.util.regex.Pattern.compile("(?iu).*(?:ضغط\\s*مطول|اضغط\\s*مطولا|اضغط\\s*مطولاً|ضغط\\s*طويل)\\s*(?:على\\s*)?(?:موقع\\s*)?(\\d+)\\s*[,،]\\s*(\\d+)(?:\\s*(?:لمدة|مده)\\s*(\\d+)\\s*(?:ms|مللي\\s*ثانية|ثانية|ثواني)?)?.*").matcher(norm);
+        if(longPress.matches()) {
+            int x=clampInt(parseIntSafe(longPress.group(1),50),0,100), y=clampInt(parseIntSafe(longPress.group(2),50),0,100);
+            int duration=longPress.group(3)==null?800:clampInt(parseIntSafe(longPress.group(3),800),300,5000);
+            if(longPress.group(3)!=null && norm.contains("ثان") && !norm.contains("مللي")) duration=clampInt(duration*1000,300,5000);
+            JSONObject st=compiledStep(TYPE_LONG_PRESS,"ضغط مطوّل عند "+x+"%، "+y+"%"); putInt(st,"xPercent",x); putInt(st,"yPercent",y); putInt(st,"duration",duration); result.put(st); return;
+        }
+        java.util.regex.Matcher tap = java.util.regex.Pattern.compile("(?iu).*(?:نقر|اضغط|انقر)\\s*(?:على\\s*)?(?:موقع\\s*)?(\\d+)\\s*[,،]\\s*(\\d+).*?").matcher(norm);
+        if(tap.matches()) {
+            int x=clampInt(parseIntSafe(tap.group(1),50),0,100), y=clampInt(parseIntSafe(tap.group(2),50),0,100);
+            JSONObject st=compiledStep(TYPE_TAP,"نقر الموقع "+x+"%، "+y+"%"); putInt(st,"xPercent",x); putInt(st,"yPercent",y); result.put(st); return;
+        }
+        if (norm.contains("نقر نص") || norm.contains("اضغط النص") || norm.contains("انقر النص") || norm.contains("اضغط على نص") || norm.contains("انقر على النص")) {
+            String value=norm.replaceFirst("(?iu)^.*?(?:نقر نص|اضغط النص|انقر النص|اضغط على نص|انقر على النص)\\s*[:：]?\\s*","").replaceAll("[«»\"']","").trim();
+            if(value.isEmpty()) warnings.add("لم يُذكر النص المطلوب للنقر: "+norm);
+            else { JSONObject st=compiledStep(TYPE_TEXT,"نقر نص: "+value); putString(st,"value",value); putInt(st,"retries",2); result.put(st); }
+            return;
+        }
+        if (norm.startsWith("اكتب") || norm.startsWith("كتابة نص") || norm.startsWith("اكتب النص")) {
+            String value=norm.replaceFirst("(?iu)^(?:اكتب(?:\\s+النص)?|كتابة نص)\\s*[:：]?\\s*","").replaceAll("[«»\"']","").trim();
+            if(value.isEmpty()) warnings.add("لم يُذكر النص المراد كتابته: "+norm);
+            else { JSONObject st=compiledStep(TYPE_TYPE_TEXT,"كتابة نص: "+value); putString(st,"value",value); result.put(st); }
+            return;
+        }
+        if (norm.contains("مرر") || norm.contains("تمرير") || norm.contains("اسحب")) {
+            String d=norm.contains("للاسفل")||norm.contains("للأسفل")||norm.contains("اسفل")?"down":norm.contains("لليمين")||norm.contains("يمين")?"right":norm.contains("لليسار")||norm.contains("يسار")?"left":"up";
+            JSONObject st=compiledStep(TYPE_SCROLL,"تمرير "+d); putString(st,"direction",d); putInt(st,"duration",450); result.put(st); return;
+        }
+        warnings.add("لم تُفهم العبارة بالكامل ولم تُنفّذ: «"+norm+"»");
+    }
+
+    private int parseDelayMs(String norm) {
+        String source = norm == null ? "" : norm;
+        if (source.contains("ثانيتين")) return 2000;
+        if (source.contains("ثلاث ثوان") || source.contains("ثلاثة ثوان")) return 3000;
+        int waitAt = source.indexOf("انتظر");
+        if (waitAt >= 0) source = source.substring(waitAt + "انتظر".length());
+        else {
+            waitAt = source.indexOf("انتظار");
+            if (waitAt >= 0) source = source.substring(waitAt + "انتظار".length());
+        }
+        java.util.regex.Matcher m=java.util.regex.Pattern.compile("(\\d+)\\s*(مللي\\s*ثانية|ms|ثانية|ثواني|دقيقة|دقائق)?").matcher(source);
+        if(m.find()) {
+            int n=Math.max(0,Math.min(60000,parseIntSafe(m.group(1),1)));
+            String unit=m.group(2)==null?"":m.group(2);
+            if(unit.contains("دقيق")) return Math.min(60000,n*60000);
+            if(unit.contains("ثان") && !unit.contains("مللي")) return Math.min(60000,n*1000);
+            return n;
+        }
+        if(source.contains("ثانية")) return 1000;
+        if(source.contains("قليلا")||source.contains("قليلًا")) return 1000;
+        return 500;
+    }
+
+    private int parseIntSafe(String value, int fallback) { try { return Integer.parseInt(value.trim()); } catch(Exception e) { return fallback; } }
+    private JSONObject compiledStep(String type, String label) { JSONObject step=BotnaStore.newStep(type,label); putInt(step,"beforeDelay",0); putInt(step,"afterDelay",0); return step; }
+    private void addCompiled(JSONArray array, String type, String label) { array.put(compiledStep(type,label)); }
+    private void addCompiledInt(JSONArray array,String type,String label,String key,int value) { JSONObject step=compiledStep(type,label); putInt(step,key,value); array.put(step); }
+
+    private void addLibraryImageStep(JSONArray compiled, JSONObject image, int number, boolean autoTap) {
+        JSONObject step=compiledStep(TYPE_IMAGE,"مطابقة صورة المكتبة رقم "+number+": "+image.optString("name","صورة"));
+        JSONArray names=new JSONArray(); names.put(image.optString("fileName"));
+        try { step.put("images",names); } catch(JSONException ignored) { }
+        putInt(step,"threshold",clampInt(image.optInt("threshold",85),50,99));
+        putBoolean(step,"tapOnMatch",autoTap && image.optBoolean("tapOnMatch",true));
+        putBoolean(step,"waitForImageOnly",false);
+        putInt(step,"retries",clampInt(image.optInt("retries",2),1,10));
+        putInt(step,"retryDelay",clampInt(image.optInt("retryDelay",500),100,10000));
+        putInt(step,"beforeDelay",clampInt(image.optInt("beforeDelay",0),0,60000));
+        putInt(step,"afterDelay",clampInt(image.optInt("afterDelay",0),0,60000));
+        putString(step,"searchRegionMode",image.optString("searchRegionMode","full"));
+        for(String k:new String[]{"searchX","searchY","searchW","searchH","captureX","captureY","captureW","captureH"}) if(image.has(k)) putInt(step,k,image.optInt(k));
+        compiled.put(step);
+    }
+
+    private JSONArray expandCustomSteps(JSONArray source) {
+        JSONArray output=new JSONArray(); if(source==null) return output;
+        for(int i=0;i<source.length();i++) {
+            JSONObject item=source.optJSONObject(i); if(item==null) continue;
+            if(TYPE_CUSTOM.equals(item.optString("type"))) {
+                JSONArray inner=item.optJSONArray("compiledSteps");
+                if(inner==null) continue;
+                JSONArray expanded=expandCustomSteps(inner);
+                boolean parentEnabled=item.optBoolean("enabled",true);
+                for(int j=0;j<expanded.length();j++) {
+                    JSONObject child=expanded.optJSONObject(j); if(child==null) continue;
+                    try { child.put("enabled", parentEnabled && child.optBoolean("enabled",true)); } catch(JSONException ignored) { }
+                    output.put(child);
+                }
+            } else {
+                try { output.put(new JSONObject(item.toString())); } catch(JSONException ignored) { }
             }
         }
-        if (target == null) {
-            target = addStep(TYPE_IMAGE, "مطابقة صورة الهدف");
-            cropCreatedNewStep = true;
-        } else {
-            cropCreatedNewStep = false;
+        return output;
+    }
+
+    private JSONArray getLibrary() { return BotnaStore.imageLibrary(this); }
+    private JSONObject findLibraryImage(String id) {
+        JSONArray lib=getLibrary();
+        for(int i=0;i<lib.length();i++) { JSONObject item=lib.optJSONObject(i); if(item!=null && id.equals(item.optString("id"))) return item; }
+        return null;
+    }
+    private void saveLibrary(JSONArray lib) { BotnaStore.saveImageLibrary(this,lib); }
+
+    private void showImageLibrary() {
+        JSONArray lib=getLibrary();
+        String[] options=new String[lib.length()+1]; options[0]="＋ إضافة صورة جديدة";
+        for(int i=0;i<lib.length();i++) { JSONObject item=lib.optJSONObject(i); options[i+1]=(i+1)+". "+(item==null?"صورة":item.optString("name","صورة"))+" • "+(item==null?85:item.optInt("threshold",85))+"%"; }
+        showChoice("مكتبة صور الخطوات المخصصة",options,choice->{ if(choice==0) promptText("اسم الصورة الجديدة", "صورة "+(lib.length()+1), name->{ libraryPendingName=name; libraryReplaceId=""; activeLibraryId=""; cropStepId=""; cropCreatedNewStep=false; replaceImageTarget=false; cropPurpose=CROP_LIBRARY_IMAGE; beginCaptureForCrop(); }); else showLibraryImageSettings(choice-1); });
+    }
+
+    private void showLibraryImageSettings(int index) {
+        JSONArray lib=getLibrary(); JSONObject item=lib.optJSONObject(index); if(item==null) return;
+        String id=item.optString("id");
+        showChoice("صورة المكتبة: "+item.optString("name"),new String[]{"تعديل الاسم","نسبة التطابق","إعدادات المطابقة","منطقة البحث","استبدال الصورة","حذف الصورة"},choice->{
+            JSONArray current=getLibrary(); JSONObject currentItem=findLibraryImage(id); if(currentItem==null)return;
+            if(choice==0) promptText("اسم الصورة",currentItem.optString("name"),name->{putString(currentItem,"name",name.trim());saveLibrary(current);showImageLibrary();});
+            else if(choice==1) promptNumber("نسبة التطابق (50–99)",currentItem.optInt("threshold",85),50,99,value->{putInt(currentItem,"threshold",value);saveLibrary(current);report("تم حفظ نسبة التطابق للصورة.");});
+            else if(choice==2) editLibraryAdvancedSettings(currentItem);
+            else if(choice==3) editLibrarySearchRegion(currentItem);
+            else if(choice==4) { libraryPendingName=currentItem.optString("name"); libraryReplaceId=id; activeLibraryId=id; cropStepId=""; cropCreatedNewStep=false; replaceImageTarget=false; cropPurpose=CROP_LIBRARY_IMAGE; beginCaptureForCrop(); }
+            else confirmDeleteLibraryImage(id);
+        });
+    }
+
+    private void editLibraryAdvancedSettings(JSONObject item) {
+        String id=item.optString("id");
+        showChoice("إعدادات صورة المكتبة",new String[]{item.optBoolean("tapOnMatch",true)?"عدم الضغط بعد العثور":"الضغط بعد العثور", "عدد المحاولات", "فاصل المحاولة", "انتظار قبل الخطوة", "انتظار بعد الخطوة"},choice->{
+            JSONObject target=findLibraryImage(id); if(target==null)return;
+            JSONArray lib=getLibrary();
+            if(choice==0){putBoolean(target,"tapOnMatch",!target.optBoolean("tapOnMatch",true));saveLibrary(lib);editLibraryAdvancedSettings(target);}
+            else if(choice==1)promptNumber("عدد المحاولات (1–10)",target.optInt("retries",2),1,10,v->{putInt(target,"retries",v);saveLibrary(lib);});
+            else if(choice==2)promptNumber("فاصل المحاولة بالمللي ثانية",target.optInt("retryDelay",500),100,10000,v->{putInt(target,"retryDelay",v);saveLibrary(lib);});
+            else if(choice==3)promptNumber("انتظار قبل المطابقة بالمللي ثانية",target.optInt("beforeDelay",0),0,60000,v->{putInt(target,"beforeDelay",v);saveLibrary(lib);});
+            else promptNumber("انتظار بعد المطابقة بالمللي ثانية",target.optInt("afterDelay",0),0,60000,v->{putInt(target,"afterDelay",v);saveLibrary(lib);});
+        });
+    }
+
+    private void editLibrarySearchRegion(JSONObject item) {
+        String id=item.optString("id");
+        showChoice("منطقة بحث قالب المكتبة",new String[]{"الشاشة الكاملة (افتراضي)","مكان القص الأصلي", "تحديد منطقة مخصصة"},choice->{
+            JSONObject target=findLibraryImage(id); if(target==null)return; JSONArray lib=getLibrary();
+            if(choice==0){putString(target,"searchRegionMode","full");saveLibrary(lib);report("ستبحث صورة المكتبة عبر الشاشة الكاملة.");}
+            else if(choice==1){
+                if(!target.has("captureW")){report("لا يوجد موضع قص محفوظ؛ استخدم الشاشة الكاملة أو منطقة مخصصة.");return;}
+                putString(target,"searchRegionMode","original");saveLibrary(lib);report("ستبحث صورة المكتبة قرب منطقة القص الأصلية.");
+            } else {activeLibraryId=id; cropStepId=id; cropPurpose=CROP_LIBRARY_SEARCH_REGION; cropCreatedNewStep=false; replaceImageTarget=false; beginCaptureForCrop();}
+        });
+    }
+
+    private void confirmDeleteLibraryImage(String id) {
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("حذف صورة المكتبة").setMessage("سيتم حذف قالب الصورة من المكتبة. الخطوات المخصصة التي تستخدمها ستعرض تحذيرًا إذا أصبحت الصورة غير متاحة. متابعة؟")
+                .setPositiveButton("حذف",(d,w)->{
+                    JSONArray old=getLibrary(),next=new JSONArray(); String filename="";
+                    for(int i=0;i<old.length();i++){JSONObject item=old.optJSONObject(i); if(item!=null&&id.equals(item.optString("id"))){filename=item.optString("fileName");continue;} next.put(item);}
+                    saveLibrary(next); if(!filename.isEmpty()) {File f=new File(new File(getFilesDir(),"botna_library"),filename); if(f.exists()) f.delete();}
+                    report("تم حذف صورة المكتبة."); showImageLibrary();
+                }).setNegativeButton("إلغاء",null).create();
+        try { if(dialog.getWindow()!=null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
+        catch(Exception e) { report("تعذر عرض تأكيد حذف صورة المكتبة."); }
+    }
+
+    // ---------------- Point picker for absolute screen taps ----------------
+    private android.util.DisplayMetrics realScreenMetrics() {
+        android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+        try { if (wm != null) wm.getDefaultDisplay().getRealMetrics(metrics); }
+        catch (Exception ignored) { }
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) {
+            android.util.DisplayMetrics fallback = getResources().getDisplayMetrics();
+            metrics.setTo(fallback);
         }
-        cropStepId = target.optString("id");
+        return metrics;
+    }
+
+    private void copyCoordinates(int xPercent, int yPercent) {
+        android.util.DisplayMetrics metrics = realScreenMetrics();
+        int x = Math.max(0, Math.min(metrics.widthPixels - 1, Math.round(metrics.widthPixels * xPercent / 100f)));
+        int y = Math.max(0, Math.min(metrics.heightPixels - 1, Math.round(metrics.heightPixels * yPercent / 100f)));
+        String value = "x=" + x + ", y=" + y + " px (" + xPercent + "%, " + yPercent + "%)";
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("Botna coordinates", value));
+            report("نُسخت إحداثيات النقطة: " + value);
+            Toast.makeText(this, "تم نسخ الإحداثيات: " + value, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) { report("تعذر نسخ الإحداثيات."); }
+    }
+
+    private void openPointSelector(JSONObject step) {
+        if (wm == null || step == null) return;
+        activePointStepId = step.optString("id", "");
+        hidePanel(); removeView(bubble); bubble = null;
+        removeView(pointSelector); pointSelector = null;
+        PointSelector selector = new PointSelector(step.optInt("xPercent", 50), step.optInt("yPercent", 50));
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                -1, -1, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        try { wm.addView(selector, params); pointSelector = selector; }
+        catch (Exception e) { pointSelector = null; showBubble(); showPanel(); report("تعذر فتح محدد نقطة النقر."); }
+    }
+
+    private void finishPointSelection(boolean save) {
+        PointSelector selector = pointSelector;
+        if (selector == null) return;
+        if (save) {
+            JSONObject script = ensureScript();
+            JSONObject step = findStepById(script, activePointStepId);
+            if (step != null) {
+                int xp = Math.max(0, Math.min(100, Math.round(selector.pointX / (float)Math.max(1, selector.getWidth()) * 100f)));
+                int yp = Math.max(0, Math.min(100, Math.round(selector.pointY / (float)Math.max(1, selector.getHeight()) * 100f)));
+                putInt(step, "xPercent", xp); putInt(step, "yPercent", yp);
+                putString(step, "label", "نقر الموقع " + xp + "%، " + yp + "%");
+                BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
+                report("تم حفظ نقطة النقر: " + xp + "% أفقيًا و" + yp + "% عموديًا.");
+            }
+        }
+        removeView(selector); pointSelector = null; activePointStepId = "";
+        showBubble(); showPanel();
+    }
+
+    private class PointSelector extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float density = getResources().getDisplayMetrics().density;
+        private float pointX, pointY;
+        private final int initialXP, initialYP;
+        private float downX, downY;
+        private int actionMode; // 0 point, 1 save, 2 copy, 3 cancel
+        PointSelector(int xp, int yp) { super(BotnaAccessibilityService.this); initialXP=xp; initialYP=yp; setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) { pointX = w * initialXP / 100f; pointY = h * initialYP / 100f; }
+        @Override protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            float r = 8*density;
+            paint.setColor(Color.argb(58, 35, 226, 244)); paint.setStyle(Paint.Style.FILL);
+            c.drawCircle(pointX, pointY, r, paint);
+            paint.setColor(Color.argb(235, 35, 226, 244)); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2*density);
+            c.drawCircle(pointX, pointY, r, paint);
+            paint.setStyle(Paint.Style.FILL); c.drawCircle(pointX, pointY, 2.2f*density, paint);
+            paint.setColor(Color.argb(215, 4, 9, 16));
+            c.drawRoundRect(new RectF(8*density,8*density,getWidth()-8*density,45*density),10*density,10*density,paint);
+            paint.setColor(TEXT); paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(13*density);
+            int px = Math.max(0, Math.min(100, Math.round(pointX / Math.max(1f, getWidth()) * 100f)));
+            int py = Math.max(0, Math.min(100, Math.round(pointY / Math.max(1f, getHeight()) * 100f)));
+            c.drawText("اسحب النقطة للمكان المطلوب  •  " + px + "% / " + py + "%",getWidth()/2f,31*density,paint);
+            float top=getHeight()-54*density;
+            paint.setColor(Color.argb(235,4,10,18)); c.drawRoundRect(new RectF(8*density,top,getWidth()-8*density,getHeight()-7*density),12*density,12*density,paint);
+            paint.setTextSize(12*density);
+            paint.setColor(Color.rgb(255,130,153)); c.drawText("× إلغاء",48*density,top+29*density,paint);
+            paint.setColor(TEXT); c.drawText("⧉ نسخ",getWidth()/2f,top+29*density,paint);
+            paint.setColor(CYAN); c.drawText("✓ حفظ",getWidth()-52*density,top+29*density,paint);
+        }
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            float x=e.getX(), y=e.getY();
+            float top=getHeight()-54*density;
+            if(e.getAction()==MotionEvent.ACTION_DOWN) {
+                downX=x; downY=y; actionMode=0;
+                if(y>=top) {
+                    if(x<94*density) actionMode=3;
+                    else if(x>getWidth()-104*density) actionMode=1;
+                    else if(Math.abs(x-getWidth()/2f)<74*density) actionMode=2;
+                }
+                if(actionMode==0) { pointX=x; pointY=y; invalidate(); }
+                return true;
+            }
+            if(e.getAction()==MotionEvent.ACTION_MOVE && actionMode==0) { pointX=Math.max(0,Math.min(getWidth(),x)); pointY=Math.max(0,Math.min(getHeight(),y)); invalidate(); return true; }
+            if(e.getAction()==MotionEvent.ACTION_UP) {
+                if(actionMode==1) finishPointSelection(true);
+                else if(actionMode==2) {
+                    int xp=Math.max(0,Math.min(100,Math.round(pointX/Math.max(1f,getWidth())*100f)));
+                    int yp=Math.max(0,Math.min(100,Math.round(pointY/Math.max(1f,getHeight())*100f)));
+                    android.util.DisplayMetrics m=realScreenMetrics();
+                    copyCoordinates(xp,yp);
+                } else if(actionMode==3) finishPointSelection(false);
+                else { pointX=Math.max(0,Math.min(getWidth(),x)); pointY=Math.max(0,Math.min(getHeight(),y)); invalidate(); }
+                return true;
+            }
+            return true;
+        }
+    }
+
+    // ---------------- Screenshot crop with transparent resizable frame ----------------
+    private void prepareCropAngle(JSONObject step) {
+        if (step == null || !TYPE_IMAGE.equals(step.optString("type"))) return;
+        // This is the explicit, opt-in action for adding a variant to an existing step.
+        // The main “قص هدف” button below always creates an independent step.
+        cropStepId = step.optString("id");
+        cropCreatedNewStep = false;
         replaceImageTarget = false;
-        rebuildPanel();
+        cropPurpose = CROP_TARGET;
         beginCaptureForCrop();
+    }
+
+    private void prepareCropStep() {
+        // Every “قص هدف” command creates a separate image step in sequence.
+        JSONObject step = addStep(TYPE_IMAGE, "مطابقة صورة الهدف");
+        initializeImageStepDefaults(step, false);
+        cropStepId = step.optString("id");
+        cropCreatedNewStep = true;
+        replaceImageTarget = false;
+        cropPurpose = CROP_TARGET;
+        saveStepObject(step);
+        beginCaptureForCrop();
+    }
+
+    private void initializeImageStepDefaults(JSONObject step, boolean waitOnly) {
+        putInt(step, "threshold", 85);
+        putBoolean(step, "tapOnMatch", !waitOnly);
+        putBoolean(step, "waitForImageOnly", waitOnly);
+        putInt(step, "retries", waitOnly ? 3 : 1);
+        putInt(step, "retryDelay", 500);
+        putInt(step, "beforeDelay", 0);
+        putInt(step, "afterDelay", 0);
+        putString(step, "searchRegionMode", "full");
+        try { if (step.optJSONArray("images") == null) step.put("images", new JSONArray()); } catch (JSONException ignored) { }
     }
 
     private void beginCaptureForCrop() {
@@ -944,7 +1445,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     discardEmptyCreatedCropStep();
                     showBubble(); showPanel(); report("تعذر التقاط الشاشة: " + error); return;
                 }
-                showCropSelector(screenshot);
+                showCropSelector(screenshot, cropPurpose);
             }
         }), 220);
     }
@@ -975,8 +1476,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         } catch (Exception e) { callback.done(null, e.getClass().getSimpleName()); }
     }
 
-    private void showCropSelector(Bitmap screenshot) {
-        cropSelector = new CropSelector(screenshot);
+    private void showCropSelector(Bitmap screenshot, int purpose) {
+        cropSelector = new CropSelector(screenshot, purpose);
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
                 -1, -1, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -989,88 +1490,162 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void finishCrop(Bitmap screenshot, RectF selection, int viewWidth, int viewHeight) {
         Bitmap cropped = null;
         try {
-            if (screenshot == null || screenshot.isRecycled()) {
-                throw new IllegalStateException("صورة الشاشة غير متاحة");
-            }
+            if (screenshot == null || screenshot.isRecycled()) throw new IllegalStateException("صورة الشاشة غير متاحة");
             float sx = screenshot.getWidth() / (float) Math.max(1, viewWidth);
             float sy = screenshot.getHeight() / (float) Math.max(1, viewHeight);
-            int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) (selection.left * sx)));
-            int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) (selection.top * sy)));
-            int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(selection.right * sx)));
-            int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(selection.bottom * sy)));
 
-            cropped = Bitmap.createBitmap(screenshot, left, top, right - left, bottom - top);
-            File folder = new File(getFilesDir(), "botna_targets");
-            if (!folder.exists() && !folder.mkdirs()) {
-                throw new IllegalStateException("تعذر إنشاء مجلد الصور");
-            }
-
-            String fileName = "target_" + System.currentTimeMillis() + ".png";
-            File file = new File(folder, fileName);
-            try (FileOutputStream out = new FileOutputStream(file)) {
-                if (!cropped.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                    throw new IllegalStateException("فشل ضغط الصورة إلى PNG");
+            if (cropPurpose == CROP_SEARCH_REGION || cropPurpose == CROP_LIBRARY_SEARCH_REGION) {
+                int leftPct = clampInt(Math.round(selection.left / Math.max(1f, viewWidth) * 100f), 0, 99);
+                int topPct = clampInt(Math.round(selection.top / Math.max(1f, viewHeight) * 100f), 0, 99);
+                int rightPct = clampInt(Math.round(selection.right / Math.max(1f, viewWidth) * 100f), leftPct + 1, 100);
+                int bottomPct = clampInt(Math.round(selection.bottom / Math.max(1f, viewHeight) * 100f), topPct + 1, 100);
+                if (cropPurpose == CROP_SEARCH_REGION) {
+                    JSONObject script = ensureScript();
+                    JSONObject step = findStepById(script, cropStepId);
+                    if (step == null) throw new IllegalStateException("لم يتم العثور على خطوة الصورة التي ستُعدّل منطقة بحثها");
+                    putString(step, "searchRegionMode", "custom");
+                    putInt(step, "searchX", leftPct); putInt(step, "searchY", topPct);
+                    putInt(step, "searchW", Math.max(1, rightPct - leftPct));
+                    putInt(step, "searchH", Math.max(1, bottomPct - topPct));
+                    BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
+                    report("تم حفظ منطقة بحث مخصصة لهذه الخطوة.");
+                } else {
+                    JSONObject item = findLibraryImage(activeLibraryId);
+                    if (item == null) throw new IllegalStateException("لم يتم العثور على صورة المكتبة لتعديل منطقة بحثها");
+                    putString(item, "searchRegionMode", "custom");
+                    putInt(item, "searchX", leftPct); putInt(item, "searchY", topPct);
+                    putInt(item, "searchW", Math.max(1, rightPct - leftPct));
+                    putInt(item, "searchH", Math.max(1, bottomPct - topPct));
+                    saveLibrary(getLibrary());
+                    report("تم حفظ منطقة بحث مخصصة لقالب المكتبة.");
                 }
-                out.flush();
-            }
+            } else {
+                int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) (selection.left * sx)));
+                int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) (selection.top * sy)));
+                int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(selection.right * sx)));
+                int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(selection.bottom * sy)));
+                cropped = Bitmap.createBitmap(screenshot, left, top, right - left, bottom - top);
 
-            JSONObject script = ensureScript();
-            JSONArray steps = BotnaStore.steps(script);
-            boolean found = false;
-            for (int i = 0; i < steps.length(); i++) {
-                JSONObject step = steps.optJSONObject(i);
-                if (step != null && cropStepId.equals(step.optString("id"))) {
+                // Store a small margin around the original crop. Percentages allow the
+                // area to scale with the screenshot, and the margin tolerates slight movement.
+                int captureX = clampInt(Math.round(selection.left / Math.max(1f, viewWidth) * 100f) - 1, 0, 99);
+                int captureY = clampInt(Math.round(selection.top / Math.max(1f, viewHeight) * 100f) - 1, 0, 99);
+                int captureRight = clampInt(Math.round(selection.right / Math.max(1f, viewWidth) * 100f) + 1, captureX + 1, 100);
+                int captureBottom = clampInt(Math.round(selection.bottom / Math.max(1f, viewHeight) * 100f) + 1, captureY + 1, 100);
+                int captureW = Math.max(1, captureRight - captureX);
+                int captureH = Math.max(1, captureBottom - captureY);
+                boolean library = cropPurpose == CROP_LIBRARY_IMAGE;
+                File folder = new File(getFilesDir(), library ? "botna_library" : "botna_targets");
+                if (!folder.exists() && !folder.mkdirs()) throw new IllegalStateException("تعذر إنشاء مجلد الصور");
+                String fileName = (library ? "library_" : "target_") + System.currentTimeMillis() + ".png";
+                File file = new File(folder, fileName);
+                try (FileOutputStream out = new FileOutputStream(file)) {
+                    if (!cropped.compress(Bitmap.CompressFormat.PNG, 100, out)) throw new IllegalStateException("فشل ضغط الصورة إلى PNG");
+                    out.flush();
+                }
+
+                if (library) {
+                    JSONArray libraryItems = BotnaStore.imageLibrary(this);
+                    JSONObject image = null;
+                    if (!libraryReplaceId.isEmpty()) {
+                        image = findLibraryImage(libraryReplaceId);
+                        if (image != null) {
+                            String oldName = image.optString("fileName", "");
+                            if (!oldName.isEmpty() && !oldName.equals(fileName)) {
+                                File oldFile = new File(new File(getFilesDir(), "botna_library"), oldName);
+                                if (oldFile.exists()) oldFile.delete();
+                            }
+                            putString(image, "fileName", fileName);
+                        }
+                    }
+                    if (image == null) {
+                        image = new JSONObject();
+                        image.put("id", "img" + System.nanoTime());
+                        image.put("name", libraryPendingName == null || libraryPendingName.trim().isEmpty() ? "صورة مكتبة جديدة" : libraryPendingName.trim());
+                        image.put("fileName", fileName);
+                        image.put("threshold", 85); image.put("tapOnMatch", true);
+                        image.put("retries", 2); image.put("retryDelay", 500);
+                        image.put("beforeDelay", 0); image.put("afterDelay", 0);
+                        image.put("searchRegionMode", "full");
+                        libraryItems.put(image);
+                    } else putString(image, "name", libraryPendingName == null || libraryPendingName.trim().isEmpty() ? image.optString("name", "صورة") : libraryPendingName.trim());
+                    putInt(image, "captureX", captureX); putInt(image, "captureY", captureY);
+                    putInt(image, "captureW", captureW); putInt(image, "captureH", captureH);
+                    BotnaStore.saveImageLibrary(this, libraryItems);
+                    libraryReplaceId = ""; activeLibraryId = "";
+                    report("تم حفظ صورة المكتبة بنجاح.");
+                } else {
+                    JSONObject script = ensureScript();
+                    JSONArray steps = BotnaStore.steps(script);
+                    JSONObject step = findStepById(script, cropStepId);
+                    if (step == null) throw new IllegalStateException("لم يتم العثور على خطوة الهدف");
                     JSONArray images = step.optJSONArray("images");
-                    if (replaceImageTarget) images = new JSONArray();
-                    if (images == null) images = new JSONArray();
+                    if (replaceImageTarget || images == null) images = new JSONArray();
                     images.put(fileName);
                     step.put("images", images);
-                    step.put("label", "مطابقة صورة الهدف");
+                    putInt(step, "captureX", captureX); putInt(step, "captureY", captureY);
+                    putInt(step, "captureW", captureW); putInt(step, "captureH", captureH);
+                    if (step.optBoolean("waitForImageOnly", false)) putString(step, "label", "انتظار ظهور صورة");
+                    else putString(step, "label", "مطابقة صورة الهدف");
                     replaceImageTarget = false;
-                    found = true;
-                    break;
+                    BotnaStore.saveSteps(this, script, steps);
+                    cropCreatedNewStep = false;
+                    report("تم حفظ هدف الصورة كخطوة مستقلة.");
                 }
             }
-            if (!found) {
-                JSONObject step = addStep(TYPE_IMAGE, "مطابقة صورة الهدف");
-                JSONArray images = new JSONArray();
-                images.put(fileName);
-                step.put("images", images);
-                saveStepObject(step);
-                JSONObject refreshed = ensureScript();
-                steps = BotnaStore.steps(refreshed);
-            }
-            BotnaStore.saveSteps(this, ensureScript(), steps);
-            cropCreatedNewStep = false;
-            report("تم قص الهدف وحفظ الصورة بنجاح.");
-
         } catch (Exception e) {
             replaceImageTarget = false;
-            discardEmptyCreatedCropStep();
-            report("تعذر حفظ الهدف: " + e.getClass().getSimpleName() + " — " + e.getMessage());
+            if (cropPurpose == CROP_TARGET) discardEmptyCreatedCropStep();
+            report("تعذر حفظ التحديد: " + e.getClass().getSimpleName() + " — " + e.getMessage());
         } finally {
-            // Critical crash fix: detach the drawing view BEFORE releasing its bitmap.
             View oldSelector = cropSelector;
             removeView(oldSelector);
             cropSelector = null;
-
-            if (cropped != null && !cropped.isRecycled()) {
-                cropped.recycle();
-            }
-
+            if (cropped != null && !cropped.isRecycled()) cropped.recycle();
             final Bitmap sourceToRelease = screenshot;
             if (sourceToRelease != null && !sourceToRelease.isRecycled()) {
-                // Let Android finish any pending draw that still references the source bitmap.
-                handler.postDelayed(() -> {
-                    try {
-                        if (!sourceToRelease.isRecycled()) sourceToRelease.recycle();
-                    } catch (Exception ignored) { }
-                }, 500);
+                handler.postDelayed(() -> { try { if (!sourceToRelease.isRecycled()) sourceToRelease.recycle(); } catch (Exception ignored) { } }, 500);
             }
-
+            cropPurpose = CROP_TARGET;
+            libraryPendingName = ""; libraryReplaceId = ""; activeLibraryId = "";
             showBubble();
             showPanel();
         }
+    }
+
+    private JSONObject findStepById(JSONObject script, String id) {
+        JSONArray steps = BotnaStore.steps(script);
+        for (int i = 0; i < steps.length(); i++) {
+            JSONObject step = steps.optJSONObject(i);
+            if (step != null && id != null && id.equals(step.optString("id"))) return step;
+        }
+        return null;
+    }
+
+    private int clampInt(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
+
+    private void editSearchRegion(JSONObject script, JSONObject step) {
+        String mode = step.optString("searchRegionMode", "full");
+        showChoice("منطقة البحث عن الصورة", new String[]{
+                "الشاشة الكاملة (افتراضي)" + ("full".equals(mode) ? " ✓" : ""),
+                "مكان القص الأصلي" + ("original".equals(mode) ? " ✓" : ""),
+                "تحديد منطقة مخصصة" + ("custom".equals(mode) ? " ✓" : "")
+        }, choice -> {
+            if (choice == 0 || choice == 1) {
+                String selectedMode = choice == 0 ? "full" : "original";
+                if ("original".equals(selectedMode) && !step.has("captureW")) {
+                    report("لا يوجد موضع قص محفوظ لهذه الخطوة؛ استخدم الشاشة الكاملة أو حدّد منطقة مخصصة."); return;
+                }
+                putString(step, "searchRegionMode", selectedMode);
+                BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
+                report(choice == 0 ? "تم ضبط البحث على الشاشة الكاملة." : "سيُحصر البحث في المنطقة التي قُصّ منها الهدف أول مرة/آخر زاوية."); rebuildPanel();
+            } else {
+                cropStepId = step.optString("id");
+                cropCreatedNewStep = false; replaceImageTarget = false;
+                cropPurpose = CROP_SEARCH_REGION;
+                beginCaptureForCrop();
+            }
+        });
     }
 
     private void discardEmptyCreatedCropStep() {
@@ -1094,7 +1669,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void cancelCrop(Bitmap screenshot) {
         replaceImageTarget = false;
-        discardEmptyCreatedCropStep();
+        if (cropPurpose == CROP_TARGET) discardEmptyCreatedCropStep();
         // Detach the view first; never recycle a bitmap while CropSelector can still draw it.
         View oldSelector = cropSelector;
         removeView(oldSelector);
@@ -1107,83 +1682,121 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 } catch (Exception ignored) { }
             }, 500);
         }
+        cropPurpose = CROP_TARGET;
+        libraryPendingName = ""; libraryReplaceId = ""; activeLibraryId = "";
         showBubble();
         showPanel();
-        report("تم إلغاء القص.");
+        report("تم إلغاء التحديد.");
     }
 
     private class CropSelector extends View {
         private final Bitmap screenshot;
+        private final int purpose;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final RectF rect = new RectF();
-        private int mode = 0; // 0 new/inside, 1 top-left, 2 top-right, 3 bottom-left, 4 bottom-right, 5 move
+        private int mode = 0; // 0 create, 1..4 corners, 5 move, 6..9 edges, 10 save, 11 cancel
         private float downX, downY;
         private final RectF initial = new RectF();
-        private float density;
-        CropSelector(Bitmap bitmap) { super(BotnaAccessibilityService.this); screenshot = bitmap; density = getResources().getDisplayMetrics().density; setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
+        private final float density;
+        private final float minimumSize;
+        CropSelector(Bitmap bitmap, int purpose) {
+            super(BotnaAccessibilityService.this);
+            screenshot = bitmap; this.purpose = purpose;
+            density = getResources().getDisplayMetrics().density;
+            minimumSize = Math.max(1f, 1f * density);
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        }
         @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
-            if (rect.isEmpty()) { float cw = w * .38f, ch = h * .20f; rect.set((w-cw)/2f, (h-ch)/2f, (w+cw)/2f, (h+ch)/2f); }
+            if (rect.isEmpty()) {
+                float cw = Math.min(w * .62f, Math.max(minimumSize * 2, w * .42f));
+                float ch = Math.min(h * .35f, Math.max(minimumSize * 2, h * .28f));
+                rect.set((w-cw)/2f, (h-ch)/2f, (w+cw)/2f, (h+ch)/2f);
+            }
         }
         @Override protected void onDraw(Canvas c) {
-            super.onDraw(c); c.drawBitmap(screenshot, null, new RectF(0, 0, getWidth(), getHeight()), paint);
-            paint.setColor(Color.argb(155, 0, 0, 0));
+            super.onDraw(c);
+            c.drawBitmap(screenshot, null, new RectF(0, 0, getWidth(), getHeight()), paint);
+            paint.setColor(Color.argb(145, 0, 0, 0));
             c.drawRect(0,0,getWidth(),rect.top,paint); c.drawRect(0,rect.bottom,getWidth(),getHeight(),paint);
             c.drawRect(0,rect.top,rect.left,rect.bottom,paint); c.drawRect(rect.right,rect.top,getWidth(),rect.bottom,paint);
-            paint.setColor(CYAN); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(3*density); c.drawRect(rect,paint);
-            paint.setStyle(Paint.Style.FILL); float r=8*density;
-            c.drawCircle(rect.left,rect.top,r,paint); c.drawCircle(rect.right,rect.top,r,paint); c.drawCircle(rect.left,rect.bottom,r,paint); c.drawCircle(rect.right,rect.bottom,r,paint);
-            c.drawCircle(rect.centerX(), rect.top, r, paint); c.drawCircle(rect.centerX(), rect.bottom, r, paint);
-            c.drawCircle(rect.left, rect.centerY(), r, paint); c.drawCircle(rect.right, rect.centerY(), r, paint);
-            paint.setColor(Color.argb(225,5,7,12)); paint.setStyle(Paint.Style.FILL);
-            c.drawRoundRect(new RectF(8*density, 8*density, getWidth()-8*density, 52*density), 12*density,12*density,paint);
-            paint.setColor(TEXT); paint.setTextSize(14*density); paint.setTextAlign(Paint.Align.CENTER);
-            c.drawText("حرّك الإطار أو اسحب إحدى زواياه لضبط القص", getWidth()/2f, 35*density, paint);
-            float by=getHeight()-60*density;
-            paint.setColor(Color.argb(240,8,14,22)); c.drawRoundRect(new RectF(getWidth()-150*density,by,getWidth()-8*density,getHeight()-8*density),12*density,12*density,paint);
-            paint.setColor(CYAN); c.drawText("✓ حفظ الهدف", getWidth()-79*density, by+31*density, paint);
-            paint.setColor(Color.rgb(240,110,130)); c.drawText("إلغاء", 65*density, by+31*density, paint);
-        }
-        @Override public boolean onTouchEvent(MotionEvent e) {
-            float x=e.getX(), y=e.getY();
-            if (e.getAction()==MotionEvent.ACTION_DOWN) {
-                downX=x; downY=y; initial.set(rect);
-                if (y > getHeight()-70*density) { mode=10; return true; }
-                if (distance(x,y,rect.left,rect.top)<35*density) mode=1;
-                else if(distance(x,y,rect.right,rect.top)<35*density) mode=2;
-                else if(distance(x,y,rect.left,rect.bottom)<35*density) mode=3;
-                else if(distance(x,y,rect.right,rect.bottom)<35*density) mode=4;
-                else if(distance(x,y,rect.centerX(),rect.top)<35*density) mode=6;
-                else if(distance(x,y,rect.centerX(),rect.bottom)<35*density) mode=7;
-                else if(distance(x,y,rect.left,rect.centerY())<35*density) mode=8;
-                else if(distance(x,y,rect.right,rect.centerY())<35*density) mode=9;
-                else if(rect.contains(x,y)) mode=5;
-                else { mode=0; rect.set(x,y,x,y); }
-                invalidate(); return true;
-            }
-            if (e.getAction()==MotionEvent.ACTION_MOVE) {
-                float dx=x-downX, dy=y-downY;
-                if(mode==0) rect.set(Math.min(downX,x),Math.min(downY,y),Math.max(downX,x),Math.max(downY,y));
-                else if(mode==1) { rect.left=clamp(downX+dx,0,rect.right-20*density); rect.top=clamp(downY+dy,0,rect.bottom-20*density); }
-                else if(mode==2) { rect.right=clamp(initial.right+dx,rect.left+20*density,getWidth()); rect.top=clamp(initial.top+dy,0,rect.bottom-20*density); }
-                else if(mode==3) { rect.left=clamp(initial.left+dx,0,rect.right-20*density); rect.bottom=clamp(initial.bottom+dy,rect.top+20*density,getHeight()-75*density); }
-                else if(mode==4) { rect.right=clamp(initial.right+dx,rect.left+20*density,getWidth()); rect.bottom=clamp(initial.bottom+dy,rect.top+20*density,getHeight()-75*density); }
-                else if(mode==5) { float w=initial.width(),h=initial.height(); float left=clamp(initial.left+dx,0,getWidth()-w); float top=clamp(initial.top+dy,55*density,getHeight()-75*density-h); rect.set(left,top,left+w,top+h); }
-                else if(mode==6) rect.top=clamp(initial.top+dy,55*density,rect.bottom-20*density);
-                else if(mode==7) rect.bottom=clamp(initial.bottom+dy,rect.top+20*density,getHeight()-75*density);
-                else if(mode==8) rect.left=clamp(initial.left+dx,0,rect.right-20*density);
-                else if(mode==9) rect.right=clamp(initial.right+dx,rect.left+20*density,getWidth());
-                invalidate(); return true;
-            }
-            if (e.getAction()==MotionEvent.ACTION_UP) {
-                if(mode==10) {
-                    if(x > getWidth()/2f) finishCrop(screenshot,new RectF(rect),getWidth(),getHeight()); else cancelCrop(screenshot);
-                }
-                invalidate(); return true;
-            }
-            return true;
+            paint.setColor(CYAN); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.1f*density); c.drawRect(rect,paint);
+            // Only four small visible corner handles. Edge dragging remains available
+            // through invisible hit bands, avoiding decorative dots over tiny targets.
+            paint.setStyle(Paint.Style.FILL); float r = 2.8f*density;
+            paint.setColor(Color.argb(245, 28, 229, 244));
+            c.drawCircle(rect.left,rect.top,r,paint); c.drawCircle(rect.right,rect.top,r,paint);
+            c.drawCircle(rect.left,rect.bottom,r,paint); c.drawCircle(rect.right,rect.bottom,r,paint);
+            // Keep the action bar at the TOP, not the bottom. A bottom toolbar
+            // steals touch events from the lower crop edge and makes full-height
+            // selections unreliable on devices with a gesture/navigation area.
+            paint.setColor(Color.argb(230,5,7,12)); paint.setStyle(Paint.Style.FILL);
+            c.drawRoundRect(new RectF(8*density, 8*density, getWidth()-8*density, 49*density), 11*density,11*density,paint);
+            float actionTop = 11*density, actionBottom = 46*density;
+            paint.setColor(Color.argb(238,7,15,26));
+            c.drawRoundRect(new RectF(12*density,actionTop,86*density,actionBottom),9*density,9*density,paint);
+            c.drawRoundRect(new RectF(getWidth()-86*density,actionTop,getWidth()-12*density,actionBottom),9*density,9*density,paint);
+            paint.setTextSize(11*density); paint.setTextAlign(Paint.Align.CENTER);
+            paint.setColor(Color.rgb(255,132,152)); c.drawText("إلغاء",49*density,34*density,paint);
+            paint.setColor(CYAN); c.drawText("✓ حفظ",getWidth()-49*density,34*density,paint);
+            paint.setColor(TEXT); paint.setTextSize(11*density);
+            String hint = (purpose == CROP_SEARCH_REGION || purpose == CROP_LIBRARY_SEARCH_REGION) ? "اسحب الإطار حتى حواف الشاشة" :
+                    purpose == CROP_LIBRARY_IMAGE ? "قص صورة للمكتبة" : "حرّك الإطار أو اسحب زاوية";
+            c.drawText(hint, getWidth()/2f, 34*density, paint);
         }
         private float distance(float x,float y,float a,float b) { float dx=x-a,dy=y-b; return (float)Math.sqrt(dx*dx+dy*dy); }
         private float clamp(float v,float min,float max) { return Math.max(min,Math.min(max,v)); }
+        private int hitHandle(float x, float y) {
+            // Choose the nearest corner instead of checking corners in a fixed order.
+            // This keeps tiny selections resizable when their touch radii overlap.
+            float hit=13*density;
+            float[] ds = new float[]{distance(x,y,rect.left,rect.top), distance(x,y,rect.right,rect.top),
+                    distance(x,y,rect.left,rect.bottom), distance(x,y,rect.right,rect.bottom)};
+            int nearest=0; float nearestDistance=Float.MAX_VALUE;
+            for(int i=0;i<ds.length;i++) if(ds[i]<nearestDistance) { nearestDistance=ds[i]; nearest=i+1; }
+            if(nearestDistance<hit) return nearest;
+            if(Math.abs(y-rect.top)<8*density && x>=rect.left && x<=rect.right) return 6;
+            if(Math.abs(y-rect.bottom)<8*density && x>=rect.left && x<=rect.right) return 7;
+            if(Math.abs(x-rect.left)<8*density && y>=rect.top && y<=rect.bottom) return 8;
+            if(Math.abs(x-rect.right)<8*density && y>=rect.top && y<=rect.bottom) return 9;
+            return 0;
+        }
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            float x=e.getX(), y=e.getY();
+            if(e.getAction()==MotionEvent.ACTION_DOWN) {
+                downX=x; downY=y; initial.set(rect);
+                int handle=hitHandle(x,y);
+                if(handle!=0) mode=handle; // Corner/edge hit zones take priority over controls.
+                else if(y>=9*density && y<=48*density && x>=getWidth()-90*density) mode=10;
+                else if(y>=9*density && y<=48*density && x<=92*density) mode=11;
+                else if(y>=9*density && y<=48*density && !rect.contains(x,y)) mode=12; // ignore header gestures
+                else if(rect.contains(x,y)) mode=5;
+                else mode=0;
+                return true;
+            }
+            if(e.getAction()==MotionEvent.ACTION_MOVE) {
+                float dx=x-downX, dy=y-downY;
+                float w=getWidth(), h=getHeight();
+                if(mode==0) rect.set(clamp(Math.min(downX,x),0,w),clamp(Math.min(downY,y),0,h),clamp(Math.max(downX,x),0,w),clamp(Math.max(downY,y),0,h));
+                else if(mode==12) return true;
+                else if(mode==1) { rect.left=clamp(initial.left+dx,0,initial.right-minimumSize); rect.top=clamp(initial.top+dy,0,initial.bottom-minimumSize); }
+                else if(mode==2) { rect.right=clamp(initial.right+dx,initial.left+minimumSize,w); rect.top=clamp(initial.top+dy,0,initial.bottom-minimumSize); }
+                else if(mode==3) { rect.left=clamp(initial.left+dx,0,initial.right-minimumSize); rect.bottom=clamp(initial.bottom+dy,initial.top+minimumSize,h); }
+                else if(mode==4) { rect.right=clamp(initial.right+dx,initial.left+minimumSize,w); rect.bottom=clamp(initial.bottom+dy,initial.top+minimumSize,h); }
+                else if(mode==5) { float rw=initial.width(), rh=initial.height(); float left=clamp(initial.left+dx,0,Math.max(0,w-rw)); float top=clamp(initial.top+dy,0,Math.max(0,h-rh)); rect.set(left,top,left+rw,top+rh); }
+                else if(mode==6) rect.top=clamp(initial.top+dy,0,rect.bottom-minimumSize);
+                else if(mode==7) rect.bottom=clamp(initial.bottom+dy,rect.top+minimumSize,h);
+                else if(mode==8) rect.left=clamp(initial.left+dx,0,rect.right-minimumSize);
+                else if(mode==9) rect.right=clamp(initial.right+dx,rect.left+minimumSize,w);
+                invalidate(); return true;
+            }
+            if(e.getAction()==MotionEvent.ACTION_UP) {
+                if(mode==10) finishCrop(screenshot,new RectF(rect),getWidth(),getHeight());
+                else if(mode==11) cancelCrop(screenshot);
+                else { invalidate(); }
+                return true;
+            }
+            return true;
+        }
     }
 
     // ---------------- Image matching and script execution ----------------
@@ -1196,12 +1809,16 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void runActiveScript() {
         if (running) { report(paused ? "السكربت متوقف مؤقتًا؛ استخدم الاستكمال." : "السكربت يعمل بالفعل."); return; }
         JSONObject script = ensureScript();
-        JSONArray scriptSteps = BotnaStore.steps(script);
-        if (scriptSteps.length() == 0) { report("أضف خطوات قبل التشغيل."); return; }
+        JSONArray sourceSteps = BotnaStore.steps(script);
+        if (sourceSteps.length() == 0) { report("أضف خطوات قبل التشغيل."); return; }
+        JSONArray scriptSteps = expandCustomSteps(sourceSteps);
+        if (scriptSteps.length() == 0) { report("لا توجد أوامر تنفيذية. راجع الخطوات المخصصة."); return; }
         String structureError = validateScriptStructure(scriptSteps);
         if (structureError != null) { report("لم يبدأ السكربت: " + structureError); return; }
         panelWasVisibleAtRunStart = panelVisible;
         currentScriptId = script.optString("id", "");
+        executionSteps = scriptSteps;
+        customTestMode = false;
         currentStepIndex = 0;
         currentBranches = new ArrayDeque<>();
         currentLoops = new ArrayDeque<>();
@@ -1251,7 +1868,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         executionGeneration++;
         running = false; paused = false; executionInFlight = false;
         currentBranches.clear(); currentLoops.clear();
-        singleStepTesting = false;
+        singleStepTesting = false; customTestMode = false;
+        executionSteps = new JSONArray();
         removeView(runControls); runControls = null;
         report("تم إيقاف التنفيذ نهائيًا.");
         showBubble();
@@ -1293,7 +1911,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         if (executionInFlight) return;
         JSONObject script = BotnaStore.getScript(this, currentScriptId);
         if (script == null) { finishScript("توقف السكربت: لم يتم العثور على تعريفه المحفوظ."); return; }
-        JSONArray steps = BotnaStore.steps(script);
+        JSONArray steps = executionSteps;
+        if (steps == null) steps = new JSONArray();
         if (currentStepIndex >= steps.length()) {
             finishScript("اكتمل السكربت من البداية إلى النهاية. آخر خطوة: " + (lastStepSuccess ? "نجاح" : "فشل") + ".");
             return;
@@ -1461,13 +2080,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 scheduleAfterAction(generation, step);
             });
         } else if (TYPE_TAP.equals(type)) {
-            int width = getResources().getDisplayMetrics().widthPixels;
-            int height = getResources().getDisplayMetrics().heightPixels;
+            android.util.DisplayMetrics metrics = realScreenMetrics();
+            int width = metrics.widthPixels, height = metrics.heightPixels;
             int x = Math.max(0, Math.min(width - 1, width * step.optInt("xPercent", 50) / 100));
             int y = Math.max(0, Math.min(height - 1, height * step.optInt("yPercent", 50) / 100));
             performTap(x, y, ok -> { if (!running || generation != executionGeneration) return; lastStepSuccess = ok; report(ok ? "نجح النقر بالموقع المحدد." : "فشل النقر بالموقع المحدد."); scheduleAfterAction(generation, step); });
         } else if (TYPE_LONG_PRESS.equals(type)) {
-            int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+            android.util.DisplayMetrics metrics=realScreenMetrics(); int width=metrics.widthPixels, height=metrics.heightPixels;
             int x=Math.max(0,Math.min(width-1,width*step.optInt("xPercent",50)/100));
             int y=Math.max(0,Math.min(height-1,height*step.optInt("yPercent",50)/100));
             performLongPress(x,y,step.optInt("duration",800),ok->{if(!running||generation!=executionGeneration)return;lastStepSuccess=ok;report(ok?"نجح الضغط المطوّل.":"فشل الضغط المطوّل.");scheduleAfterAction(generation,step);});
@@ -1511,13 +2130,16 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void finishScript(String message) {
+        boolean wasCustomTest = customTestMode;
         running = false; paused = false; executionInFlight = false;
         currentBranches.clear(); currentLoops.clear();
         executionGeneration++;
         removeView(runControls); runControls = null;
+        if (wasCustomTest) { singleStepTesting = false; customTestMode = false; message = "انتهى اختبار الخطوة المخصصة: " + message; }
         report(message);
         showBubble();
         if (panelWasVisibleAtRunStart) showPanel();
+        executionSteps = new JSONArray();
     }
 
     private void testStep(int index) {
@@ -1534,6 +2156,23 @@ public class BotnaAccessibilityService extends AccessibilityService {
         hidePanel(); removeView(bubble); bubble = null;
         String type = step.optString("type", "");
         report("اختبار منفرد للخطوة " + (index + 1) + ": " + step.optString("label", type));
+        if (TYPE_CUSTOM.equals(type)) {
+            JSONArray compiled = step.optJSONArray("compiledSteps");
+            if (compiled == null || compiled.length() == 0) {
+                finishSingleStepTest(generation, "لا توجد أوامر مترجمة؛ افتح الخطوة المخصصة واكتب أمرًا مفهومًا أولًا.");
+                return;
+            }
+            JSONArray expanded = expandCustomSteps(compiled);
+            String validation = validateScriptStructure(expanded);
+            if (validation != null) { finishSingleStepTest(generation, "تركيب الخطوة المخصصة غير صالح: " + validation); return; }
+            currentScriptId = ensureScript().optString("id", "");
+            currentStepIndex = 0; executionSteps = expanded;
+            currentBranches.clear(); currentLoops.clear(); lastStepSuccess = true;
+            panelWasVisibleAtRunStart = panelWasVisibleBeforeSingleTest;
+            customTestMode = true; running = true; paused = false; executionInFlight = false;
+            showRunControls(); runStep();
+            return;
+        }
         Runnable testAction = () -> {
             if (generation != executionGeneration || !singleStepTesting) return;
             if (TYPE_IMAGE.equals(type)) {
@@ -1556,12 +2195,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 } else delay = Math.max(0, Math.min(60000, step.optInt("delay", 500)));
                 handler.postDelayed(() -> finishSingleStepTest(generation, "نجح اختبار الانتظار (" + delay + " ms)."), delay);
             } else if (TYPE_TAP.equals(type)) {
-                int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+                android.util.DisplayMetrics metrics=realScreenMetrics(); int width=metrics.widthPixels, height=metrics.heightPixels;
                 int x=Math.max(0,Math.min(width-1,width*step.optInt("xPercent",50)/100));
                 int y=Math.max(0,Math.min(height-1,height*step.optInt("yPercent",50)/100));
                 performTap(x,y,ok->finishSingleStepTest(generation,ok?"نجح اختبار النقر بالموقع.":"فشل اختبار النقر بالموقع."));
             } else if (TYPE_LONG_PRESS.equals(type)) {
-                int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+                android.util.DisplayMetrics metrics=realScreenMetrics(); int width=metrics.widthPixels, height=metrics.heightPixels;
                 int x=Math.max(0,Math.min(width-1,width*step.optInt("xPercent",50)/100));
                 int y=Math.max(0,Math.min(height-1,height*step.optInt("yPercent",50)/100));
                 performLongPress(x,y,step.optInt("duration",800),ok->finishSingleStepTest(generation,ok?"نجح اختبار الضغط المطوّل.":"فشل اختبار الضغط المطوّل."));
@@ -1667,14 +2306,38 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private ImageMatcher.Result matchStep(Bitmap screen, JSONObject step) {
         JSONArray images = step.optJSONArray("images");
-        if (images == null || images.length() == 0) return null;
+        if (images == null || images.length() == 0 || screen == null || screen.isRecycled()) return null;
         List<ImageMatcher.NamedBitmap> templates = new ArrayList<>();
+        Bitmap searchBitmap = screen;
+        boolean croppedSearch = false;
+        int offsetX = 0, offsetY = 0;
         for (int i = 0; i < images.length(); i++) {
             String name = images.optString(i); Bitmap bitmap = readTemplate(name);
             if (bitmap != null) templates.add(new ImageMatcher.NamedBitmap(name, bitmap));
         }
-        try { return ImageMatcher.find(screen, templates, step.optInt("threshold", 85)); }
-        finally { for (ImageMatcher.NamedBitmap item : templates) if (item.bitmap != null && !item.bitmap.isRecycled()) item.bitmap.recycle(); }
+        try {
+            String searchMode = step.optString("searchRegionMode", "full");
+            if ("custom".equals(searchMode) || "original".equals(searchMode)) {
+                boolean original = "original".equals(searchMode);
+                String xKey = original ? "captureX" : "searchX";
+                String yKey = original ? "captureY" : "searchY";
+                String wKey = original ? "captureW" : "searchW";
+                String hKey = original ? "captureH" : "searchH";
+                int x = clampInt(Math.round(screen.getWidth() * step.optInt(xKey, 0) / 100f), 0, screen.getWidth() - 1);
+                int y = clampInt(Math.round(screen.getHeight() * step.optInt(yKey, 0) / 100f), 0, screen.getHeight() - 1);
+                int w = clampInt(Math.round(screen.getWidth() * step.optInt(wKey, 100) / 100f), 1, screen.getWidth() - x);
+                int h = clampInt(Math.round(screen.getHeight() * step.optInt(hKey, 100) / 100f), 1, screen.getHeight() - y);
+                searchBitmap = Bitmap.createBitmap(screen, x, y, w, h);
+                croppedSearch = true; offsetX = x; offsetY = y;
+            }
+            ImageMatcher.Result result = ImageMatcher.find(searchBitmap, templates, step.optInt("threshold", 85));
+            if (result == null || !croppedSearch) return result;
+            return new ImageMatcher.Result(result.score, result.x + offsetX, result.y + offsetY,
+                    result.width, result.height, result.templateName);
+        } finally {
+            if (croppedSearch && searchBitmap != null && !searchBitmap.isRecycled()) searchBitmap.recycle();
+            for (ImageMatcher.NamedBitmap item : templates) if (item.bitmap != null && !item.bitmap.isRecycled()) item.bitmap.recycle();
+        }
     }
 
     private void captureAppScreenshot(ScreenshotCallback callback) {
@@ -1748,7 +2411,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void performSwipe(int x1p, int y1p, int x2p, int y2p, int duration, GestureCallback callback) {
         if (Build.VERSION.SDK_INT < 24) { callback.done(false); return; }
-        int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+        android.util.DisplayMetrics metrics=realScreenMetrics(); int width=metrics.widthPixels, height=metrics.heightPixels;
         float x1=width*Math.max(0,Math.min(100,x1p))/100f, y1=height*Math.max(0,Math.min(100,y1p))/100f;
         float x2=width*Math.max(0,Math.min(100,x2p))/100f, y2=height*Math.max(0,Math.min(100,y2p))/100f;
         removeView(runControls); runControls = null;
@@ -1885,9 +2548,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private Bitmap readTemplate(String name) {
         if(name==null||name.contains("/")||name.contains("..")) return null;
-        File f=new File(new File(getFilesDir(),"botna_targets"),name);
-        if(!f.exists()) return null;
-        try { return BitmapFactoryCompat.decode(f); } catch(Exception e) { return null; }
+        File target = new File(new File(getFilesDir(), "botna_targets"), name);
+        File library = new File(new File(getFilesDir(), "botna_library"), name);
+        File file = target.isFile() ? target : library;
+        if(!file.isFile()) return null;
+        try { return BitmapFactoryCompat.decode(file); } catch(Exception e) { return null; }
     }
     private static final class BitmapFactoryCompat {
         static Bitmap decode(File f) { return android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath()); }
