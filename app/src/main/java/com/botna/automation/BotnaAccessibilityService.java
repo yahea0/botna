@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityService;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import android.app.AlertDialog;
-import android.content.ClipData;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -55,6 +54,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private static final int TEXT = Color.rgb(239, 248, 255);
     private static final int MUTED = Color.rgb(151, 174, 194);
     private static final int CYAN = Color.rgb(35, 226, 244);
+    private static final int CONTROL_GAP_MS = 250;
     private static final String TYPE_TEXT = "TEXT_CLICK";
     private static final String TYPE_BACK = "BACK";
     private static final String TYPE_HOME = "HOME";
@@ -64,22 +64,47 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private static final String TYPE_IF_FAIL = "IF_FAIL";
     private static final String TYPE_ELSE = "ELSE";
     private static final String TYPE_END_IF = "END_IF";
+    private static final String TYPE_TAP = "TAP_COORD";
+    private static final String TYPE_LONG_PRESS = "LONG_PRESS_COORD";
+    private static final String TYPE_SWIPE = "SWIPE";
+    private static final String TYPE_SCROLL = "SCROLL";
+    private static final String TYPE_TYPE_TEXT = "TYPE_TEXT";
+    private static final String TYPE_REPEAT_START = "REPEAT_START";
+    private static final String TYPE_REPEAT_END = "REPEAT_END";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService matcherExecutor = Executors.newSingleThreadExecutor();
     private WindowManager wm;
     private View bubble;
     private View panel;
+    private View runControls;
+    private ScrollView panelScrollView;
     private CropSelector cropSelector;
     private WindowManager.LayoutParams bubbleParams;
     private WindowManager.LayoutParams panelParams;
     private boolean panelVisible;
     private boolean running;
+    private boolean paused;
+    private boolean singleStepTesting;
+    private boolean panelWasVisibleAtRunStart;
+    private boolean panelWasVisibleBeforeSingleTest;
+    private boolean executionInFlight;
     private boolean lastStepSuccess = true;
+    private String currentScriptId = "";
+    private int currentStepIndex;
+    private int executionGeneration;
+    private Deque<Branch> currentBranches = new ArrayDeque<>();
+    private Deque<LoopFrame> currentLoops = new ArrayDeque<>();
+    private JSONObject copiedStep;
+    private boolean copiedStepWasCut;
     private String cropStepId = "";
+    private boolean replaceImageTarget;
+    private boolean cropCreatedNewStep;
     private TextView resultLabel;
     private LinearLayout stepList;
     private int lastActionResult = 0;
+    private int panelRestoreY;
+    private String panelScriptId = "";
 
     @Override public void onServiceConnected() {
         super.onServiceConnected();
@@ -94,18 +119,21 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     @Override public void onDestroy() {
         removeView(panel);
+        removeView(runControls);
         removeView(cropSelector);
         removeView(bubble);
-        panel = null; cropSelector = null; bubble = null;
+        panel = null; runControls = null; cropSelector = null; bubble = null;
         panelVisible = false;
-        running = false;
+        running = false; paused = false; executionGeneration++;
+        currentBranches.clear(); currentLoops.clear();
+        try { BotnaStore.saveScripts(this, BotnaStore.scripts(this)); } catch (Exception ignored) { }
         matcherExecutor.shutdownNow();
         super.onDestroy();
     }
 
     // ---------------- Floating control and glass interface ----------------
     private void showBubble() {
-        if (wm == null || bubble != null) return;
+        if (wm == null || bubble != null || running || singleStepTesting) return;
         TextView b = new TextView(this);
         b.setText("B"); b.setTextSize(20); b.setTextColor(CYAN);
         b.setGravity(Gravity.CENTER); b.setElevation(dp(12));
@@ -153,7 +181,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void togglePanel() { if (panelVisible) hidePanel(); else showPanel(); }
 
     private void showPanel() {
-        if (wm == null || panelVisible) return;
+        if (wm == null || panelVisible || running || singleStepTesting) return;
 
         // A fixed top header plus one full-content ScrollView keeps controls
         // near the top and makes every section reachable on short screens.
@@ -166,12 +194,21 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout header = horizontal();
         TextView title = label("BOTNA  •  الأتمتة الذكية", 16, TEXT, true);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
-        Button hide = button("إخفاء", false);
-        hide.setOnClickListener(v -> hidePanel());
-        header.addView(hide, new LinearLayout.LayoutParams(dp(82), dp(42)));
+        Button saveClose = button("حفظ", false);
+        saveClose.setContentDescription("حفظ السكربت وإغلاق لوحة الأتمتة");
+        saveClose.setOnClickListener(v -> confirmSaveAndClose());
+        header.addView(saveClose, new LinearLayout.LayoutParams(dp(66), dp(42)));
+        Button close = button("×", false);
+        close.setTextSize(20);
+        close.setContentDescription("إغلاق لوحة الأتمتة بعد تأكيد الحفظ");
+        close.setOnClickListener(v -> confirmSaveAndClose());
+        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(38), dp(42));
+        closeLp.setMargins(dp(4), 0, 0, 0);
+        header.addView(close, closeLp);
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(42)));
 
         ScrollView panelScroll = new ScrollView(this);
+        this.panelScrollView = panelScroll;
         panelScroll.setFillViewport(false);
         panelScroll.setVerticalScrollBarEnabled(true);
         panelScroll.setSmoothScrollingEnabled(true);
@@ -188,6 +225,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         root.addView(panelScroll, panelScrollLp);
 
         JSONObject script = BotnaStore.activeScript(this);
+        panelScriptId = script.optString("id", "");
         TextView activeName = label(
                 "السكربت الحالي: " + script.optString("name", "بدون اسم"),
                 13, CYAN, true);
@@ -225,11 +263,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
         addButton(addRow1, "＋ نقر نص", () -> promptText("النص المطلوب النقر عليه", "تطوير", value -> {
             JSONObject step = addStep(TYPE_TEXT, "نقر نص: " + value);
             putString(step, "value", value);
+            saveStepObject(step);
             rebuildPanel();
         }));
         addButton(addRow1, "＋ انتظار", () -> promptNumber("مدة الانتظار بالمللي ثانية", 500, 0, 60000, value -> {
             JSONObject step = addStep(TYPE_WAIT, "انتظار " + value + " ms");
             putInt(step, "delay", value);
+            saveStepObject(step);
             rebuildPanel();
         }));
         LinearLayout.LayoutParams addLp = wrap();
@@ -252,21 +292,111 @@ public class BotnaAccessibilityService extends AccessibilityService {
         add3Lp.topMargin = dp(5);
         content.addView(addRow3, add3Lp);
 
-        LinearLayout runRow = horizontal();
-        Button run = button("▶ تشغيل السكربت", true);
-        Button stop = button("■ إيقاف", false);
-        runRow.addView(run, new LinearLayout.LayoutParams(0, dp(44), 1));
-        runRow.addView(stop, new LinearLayout.LayoutParams(0, dp(44), 1));
-        LinearLayout.LayoutParams runLp = wrap();
-        runLp.topMargin = dp(7);
-        content.addView(runRow, runLp);
-        run.setOnClickListener(v -> runActiveScript());
-        stop.setOnClickListener(v -> {
-            running = false;
-            report("تم إيقاف السكربت يدويًا.");
-        });
+        LinearLayout addRow4 = horizontal();
+        addButton(addRow4, "نقر موقع", () -> promptText("موقع النقر كنسبة مئوية x,y (مثال 50,50)", "50,50", value -> {
+            String[] xy = value.split(",");
+            if (xy.length != 2) { report("اكتب إحداثيين بهذا الشكل: 50,50"); return; }
+            try {
+                int x = Math.max(0, Math.min(100, Integer.parseInt(xy[0].trim())));
+                int y = Math.max(0, Math.min(100, Integer.parseInt(xy[1].trim())));
+                JSONObject step = addStep(TYPE_TAP, "نقر الموقع " + x + "%، " + y + "%");
+                putInt(step, "xPercent", x); putInt(step, "yPercent", y);
+                saveStepObject(step); rebuildPanel();
+            } catch (NumberFormatException ex) { report("الإحداثيات يجب أن تكون أرقامًا من 0 إلى 100."); }
+        }));
+        addButton(addRow4, "سحب الشاشة", () -> promptText("السحب: x1,y1,x2,y2 كنسب مئوية", "50,75,50,25", value -> {
+            String[] xy = value.split(",");
+            if (xy.length != 4) { report("اكتب أربع قيم مثل 50,75,50,25"); return; }
+            try {
+                int[] n = new int[4]; for (int i = 0; i < 4; i++) n[i] = Math.max(0, Math.min(100, Integer.parseInt(xy[i].trim())));
+                JSONObject step = addStep(TYPE_SWIPE, "سحب الشاشة");
+                putInt(step, "x1", n[0]); putInt(step, "y1", n[1]); putInt(step, "x2", n[2]); putInt(step, "y2", n[3]);
+                putInt(step, "duration", 450); saveStepObject(step); rebuildPanel();
+            } catch (NumberFormatException ex) { report("قيم السحب يجب أن تكون أرقامًا من 0 إلى 100."); }
+        }));
+        addButton(addRow4, "تمرير", () -> showChoice("اتجاه التمرير", new String[]{"للأسفل", "للأعلى", "لليمين", "لليسار"}, which -> {
+            JSONObject step = addStep(TYPE_SCROLL, "تمرير " + new String[]{"للأسفل", "للأعلى", "لليمين", "لليسار"}[which]);
+            putString(step, "direction", new String[]{"down", "up", "right", "left"}[which]);
+            putInt(step, "duration", 420); saveStepObject(step); rebuildPanel();
+        }));
+        LinearLayout.LayoutParams add4Lp = wrap(); add4Lp.topMargin = dp(5); content.addView(addRow4, add4Lp);
 
-        TextView stepsTitle = label("الخطوات — اضغط للتعديل، واضغط مطولًا للسحب والترتيب", 12, MUTED, true);
+        LinearLayout addRow5 = horizontal();
+        addButton(addRow5, "كتابة نص", () -> promptText("النص الذي سيُكتب في الحقل المركّز", "", value -> {
+            JSONObject step = addStep(TYPE_TYPE_TEXT, "كتابة نص: " + value);
+            putString(step, "value", value); saveStepObject(step); rebuildPanel();
+        }));
+        addButton(addRow5, "انتظار صورة", () -> {
+            JSONObject step = addStep(TYPE_IMAGE, "انتظار/مطابقة صورة");
+            putBoolean(step, "tapOnMatch", false);
+            putBoolean(step, "waitForImageOnly", true);
+            putInt(step, "retries", 3);
+            cropStepId = step.optString("id"); cropCreatedNewStep = true;
+            saveStepObject(step); rebuildPanel(); beginCaptureForCrop();
+        });
+        addButton(addRow5, "تأخير عشوائي", () -> promptText("أدنى وأقصى انتظار بالمللي ثانية (min,max)", "500,1200", value -> {
+            String[] limits = value.split(",");
+            if (limits.length != 2) { report("اكتب الحدين مثل 500,1200"); return; }
+            try {
+                int min = Math.max(0, Math.min(60000, Integer.parseInt(limits[0].trim())));
+                int max = Math.max(min, Math.min(60000, Integer.parseInt(limits[1].trim())));
+                JSONObject step = addStep(TYPE_WAIT, "انتظار عشوائي " + min + "–" + max + " ms");
+                putInt(step, "minDelay", min); putInt(step, "maxDelay", max); putBoolean(step, "randomDelay", true);
+                saveStepObject(step); rebuildPanel();
+            } catch (NumberFormatException ex) { report("المدة يجب أن تكون رقمًا."); }
+        }));
+        LinearLayout.LayoutParams add5Lp = wrap(); add5Lp.topMargin = dp(5); content.addView(addRow5, add5Lp);
+
+        LinearLayout addRow6 = horizontal();
+        addButton(addRow6, "ضغط مطوّل", () -> promptText("موقع الضغط المطوّل x,y كنسب مئوية", "50,50", value -> {
+            String[] xy=value.split(",");
+            try {
+                if(xy.length!=2) throw new NumberFormatException();
+                int x=Math.max(0,Math.min(100,Integer.parseInt(xy[0].trim())));
+                int y=Math.max(0,Math.min(100,Integer.parseInt(xy[1].trim())));
+                JSONObject step=addStep(TYPE_LONG_PRESS,"ضغط مطوّل في " + x + "%، " + y + "%");
+                putInt(step,"xPercent",x); putInt(step,"yPercent",y); putInt(step,"duration",800);
+                saveStepObject(step); rebuildPanel();
+            } catch(NumberFormatException ex) { report("أدخل إحداثيين صحيحين مثل 50,50."); }
+        }));
+        addButton(addRow6, "إعادة قراءة الشاشة", this::readScreen);
+        addButton(addRow6, "اختبار آخر خطوة", () -> {
+            JSONArray current=BotnaStore.steps(ensureScript());
+            if(current.length()==0) report("لا توجد خطوة لاختبارها."); else testStep(current.length()-1);
+        });
+        LinearLayout.LayoutParams add6Lp = wrap(); add6Lp.topMargin = dp(5); content.addView(addRow6, add6Lp);
+
+        LinearLayout addRow7 = horizontal();
+        addButton(addRow7, "بدء تكرار", () -> promptNumber("عدد مرات تكرار المجموعة (1–1000)", 3, 1, 1000, count -> {
+            JSONObject step = addStep(TYPE_REPEAT_START, "بدء تكرار ×" + count);
+            putInt(step, "repeatCount", count); saveStepObject(step); rebuildPanel();
+        }));
+        addButton(addRow7, "نهاية التكرار", () -> { addStep(TYPE_REPEAT_END, "نهاية التكرار"); rebuildPanel(); });
+        addButton(addRow7, "اختبار خطوة محددة", () -> {
+            JSONArray current = BotnaStore.steps(ensureScript());
+            if (current.length() == 0) { report("لا توجد خطوات لاختبارها."); return; }
+            promptNumber("رقم الخطوة للاختبار", current.length(), 1, current.length(), number -> testStep(number - 1));
+        });
+        LinearLayout.LayoutParams add7Lp = wrap(); add7Lp.topMargin = dp(5); content.addView(addRow7, add7Lp);
+
+        LinearLayout runRow = horizontal();
+        Button run = button("▶ تشغيل", true);
+        Button pauseResume = button("Ⅱ إيقاف مؤقت / استكمال", false);
+        Button restart = button("↻ من البداية", false);
+        runRow.addView(run, new LinearLayout.LayoutParams(0, dp(42), 1));
+        runRow.addView(pauseResume, new LinearLayout.LayoutParams(0, dp(42), 1));
+        runRow.addView(restart, new LinearLayout.LayoutParams(0, dp(42), 1));
+        LinearLayout.LayoutParams runLp = wrap(); runLp.topMargin = dp(7); content.addView(runRow, runLp);
+        LinearLayout stopRow = horizontal();
+        Button stop = button("■ إيقاف نهائي", false);
+        stopRow.addView(stop, new LinearLayout.LayoutParams(-1, dp(38)));
+        LinearLayout.LayoutParams stopLp = wrap(); stopLp.topMargin = dp(4); content.addView(stopRow, stopLp);
+        run.setOnClickListener(v -> runActiveScript());
+        pauseResume.setOnClickListener(v -> { if (!running) report("لا يوجد سكربت قيد التشغيل."); else if (paused) resumeScript(); else pauseScript(); });
+        restart.setOnClickListener(v -> restartScript());
+        stop.setOnClickListener(v -> stopScript());
+
+        TextView stepsTitle = label("الخطوات — اضغط للتعديل، واضغط مطولًا للنسخ/القص/التحريك/اللصق", 12, MUTED, true);
         LinearLayout.LayoutParams stLp = wrap();
         stLp.topMargin = dp(10);
         content.addView(stepsTitle, stLp);
@@ -278,6 +408,15 @@ public class BotnaAccessibilityService extends AccessibilityService {
         stepsLp.topMargin = dp(4);
         content.addView(stepList, stepsLp);
         populateSteps(script);
+        String scrollKey = "panel_scroll_" + script.optString("id", "default");
+        int restoreY = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE)
+                .getInt(scrollKey, 0);
+        panelScroll.post(() -> panelScroll.scrollTo(0, Math.max(0, restoreY)));
+        panelScroll.setOnScrollChangeListener((View v, int sx, int sy, int oldSx, int oldSy) -> {
+            panelRestoreY = sy;
+            getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit()
+                    .putInt(scrollKey, sy).apply();
+        });
 
         resultLabel = label(getLastResult(), 12, MUTED, false);
         LinearLayout.LayoutParams resultLp = wrap();
@@ -307,8 +446,41 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
     }
 
-    private void rebuildPanel() { hidePanel(); showPanel(); }
-    private void hidePanel() { removeView(panel); panel = null; resultLabel = null; stepList = null; panelVisible = false; }
+    private void confirmSaveAndClose() {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("حفظ السكربت والخروج")
+                .setMessage("يُحفظ كل تعديل تلقائيًا أيضًا. هل تريد حفظ السكربت الحالي الآن وإغلاق اللوحة؟")
+                .setPositiveButton("حفظ وإغلاق", (d, w) -> {
+                    BotnaStore.saveScripts(this, BotnaStore.scripts(this));
+                    report("تم حفظ السكربت محليًا.");
+                    hidePanel();
+                })
+                .setNegativeButton("إلغاء", (d, w) -> { })
+                .create();
+        try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
+        catch (Exception e) { report("تعذر فتح نافذة تأكيد الخروج."); }
+    }
+
+    private void rebuildPanel() {
+        hidePanel();
+        showPanel();
+    }
+
+    private void hidePanel() {
+        if (panelScrollView != null) {
+            panelRestoreY = panelScrollView.getScrollY();
+            String key = "panel_scroll_" + (panelScriptId.isEmpty() ? "default" : panelScriptId);
+            getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit()
+                    .putInt(key, panelRestoreY).apply();
+        }
+        removeView(panel);
+        panel = null;
+        panelScrollView = null;
+        panelScriptId = "";
+        resultLabel = null;
+        stepList = null;
+        panelVisible = false;
+    }
 
     private void populateSteps(JSONObject script) {
         if (stepList == null) return;
@@ -340,19 +512,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
             LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(0, -2, 1); itemLp.gravity = Gravity.CENTER_VERTICAL; card.addView(item, itemLp);
             TextView del = label("×", 22, Color.rgb(255, 115, 133), true); del.setGravity(Gravity.CENTER); card.addView(del, new LinearLayout.LayoutParams(dp(30), dp(42)));
             card.setOnClickListener(v -> editStep(index));
-            del.setOnClickListener(v -> deleteStep(index));
+            del.setOnClickListener(v -> confirmDeleteStep(index));
             card.setOnLongClickListener(v -> {
-                ClipData data = ClipData.newPlainText("botna-step-index", String.valueOf(index));
-                if (Build.VERSION.SDK_INT >= 24) v.startDragAndDrop(data, new View.DragShadowBuilder(v), null, 0);
-                else v.startDrag(data, new View.DragShadowBuilder(v), null, 0);
-                return true;
-            });
-            card.setOnDragListener((v, event) -> {
-                if (event.getAction() == android.view.DragEvent.ACTION_DROP) {
-                    try { reorderStep(Integer.parseInt(event.getClipData().getItemAt(0).getText().toString()), index); }
-                    catch (Exception ignored) { }
-                    return true;
-                }
+                showStepContextMenu(index);
                 return true;
             });
         }
@@ -366,10 +528,120 @@ public class BotnaAccessibilityService extends AccessibilityService {
         BotnaStore.saveSteps(this, script, steps); return step;
     }
 
+    private void saveStepObject(JSONObject changedStep) {
+        if (changedStep == null) return;
+        JSONObject script = ensureScript();
+        JSONArray steps = BotnaStore.steps(script);
+        String id = changedStep.optString("id", "");
+        for (int i = 0; i < steps.length(); i++) {
+            JSONObject item = steps.optJSONObject(i);
+            if (item != null && id.equals(item.optString("id"))) {
+                try { steps.put(i, changedStep); } catch (JSONException ignored) { }
+                BotnaStore.saveSteps(this, script, steps);
+                return;
+            }
+        }
+    }
+
+    private void confirmDeleteStep(int index) {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("حذف الخطوة")
+                .setMessage("هل تريد حذف هذه الخطوة نهائيًا؟")
+                .setPositiveButton("حذف", (d, w) -> deleteStep(index))
+                .setNegativeButton("إلغاء", (d, w) -> { })
+                .create();
+        try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
+        catch (Exception e) { report("تعذر فتح تأكيد الحذف."); }
+    }
+
     private void deleteStep(int index) {
         JSONObject script = ensureScript(); JSONArray old = BotnaStore.steps(script); JSONArray next = new JSONArray();
         for (int i = 0; i < old.length(); i++) if (i != index) next.put(old.optJSONObject(i));
         BotnaStore.saveSteps(this, script, next); rebuildPanel();
+        report("تم حذف الخطوة.");
+    }
+
+    private void showStepContextMenu(int index) {
+        JSONObject script = ensureScript();
+        JSONArray steps = BotnaStore.steps(script);
+        JSONObject step = steps.optJSONObject(index);
+        if (step == null) return;
+        String[] options = copiedStep == null
+                ? new String[]{"إعدادات الخطوة", "اختبار الخطوة", "نسخ الخطوة", "قص الخطوة", "تحريك", "حذف الخطوة"}
+                : new String[]{"إعدادات الخطوة", "اختبار الخطوة", "نسخ الخطوة", "قص الخطوة", "تحريك", "اللصق فوق هذه الخطوة", "حذف الخطوة"};
+        showChoice("الخطوة " + (index + 1), options, choice -> {
+            String selected = options[choice];
+            if ("إعدادات الخطوة".equals(selected)) editStep(index);
+            else if ("اختبار الخطوة".equals(selected)) testStep(index);
+            else if ("نسخ الخطوة".equals(selected)) copyStep(index, false);
+            else if ("قص الخطوة".equals(selected)) copyStep(index, true);
+            else if ("تحريك".equals(selected)) chooseMoveDestination(index);
+            else if ("اللصق فوق هذه الخطوة".equals(selected)) pasteStepAbove(index);
+            else if ("حذف الخطوة".equals(selected)) confirmDeleteStep(index);
+        });
+    }
+
+    private void copyStep(int index, boolean cut) {
+        JSONArray steps = BotnaStore.steps(ensureScript());
+        JSONObject step = steps.optJSONObject(index);
+        if (step == null) return;
+        try {
+            copiedStep = new JSONObject(step.toString());
+            copiedStepWasCut = cut;
+        } catch (JSONException e) {
+            report("تعذر نسخ الخطوة."); return;
+        }
+        if (cut) {
+            JSONObject script = ensureScript(); JSONArray next = new JSONArray();
+            for (int i = 0; i < steps.length(); i++) if (i != index) next.put(steps.optJSONObject(i));
+            BotnaStore.saveSteps(this, script, next);
+            report("تم قص الخطوة. اضغط مطولًا على موضع الإدراج ثم اختر اللصق.");
+            rebuildPanel();
+        } else {
+            report("تم نسخ الخطوة. اضغط مطولًا على الموضع المطلوب واختر اللصق فوق هذه الخطوة.");
+        }
+    }
+
+    private void pasteStepAbove(int index) {
+        if (copiedStep == null) { report("لا توجد خطوة منسوخة."); return; }
+        JSONObject script = ensureScript(); JSONArray old = BotnaStore.steps(script); JSONArray next = new JSONArray();
+        JSONObject clone;
+        try { clone = new JSONObject(copiedStep.toString()); }
+        catch (JSONException e) { report("تعذر لصق الخطوة."); return; }
+        putString(clone, "id", "p" + System.nanoTime());
+        for (int i = 0; i < old.length(); i++) {
+            if (i == index) next.put(clone);
+            next.put(old.optJSONObject(i));
+        }
+        if (index >= old.length()) next.put(clone);
+        BotnaStore.saveSteps(this, script, next);
+        if (copiedStepWasCut) { copiedStep = null; copiedStepWasCut = false; }
+        report("تم لصق الخطوة فوق الموضع المحدد.");
+        rebuildPanel();
+    }
+
+    private void chooseMoveDestination(int from) {
+        JSONArray steps = BotnaStore.steps(ensureScript());
+        if (steps.length() < 2) { report("لا يوجد موضع آخر لنقل الخطوة إليه."); return; }
+        String[] destinations = new String[steps.length() + 1];
+        for (int i = 0; i < steps.length(); i++) destinations[i] = "قبل الخطوة " + (i + 1);
+        destinations[steps.length()] = "بعد جميع الخطوات";
+        showChoice("حدد مكان الخطوة", destinations, which -> moveStepToPosition(from, which));
+    }
+
+    private void moveStepToPosition(int from, int position) {
+        JSONObject script = ensureScript(); JSONArray old = BotnaStore.steps(script);
+        if (from < 0 || from >= old.length()) return;
+        List<JSONObject> items = new ArrayList<>();
+        for (int i = 0; i < old.length(); i++) items.add(old.optJSONObject(i));
+        JSONObject moving = items.remove(from);
+        if (position > from) position--;
+        int target = Math.max(0, Math.min(position, items.size()));
+        items.add(target, moving);
+        JSONArray next = new JSONArray(); for (JSONObject item : items) next.put(item);
+        BotnaStore.saveSteps(this, script, next);
+        report("تم نقل الخطوة وحفظ ترتيبها.");
+        rebuildPanel();
     }
 
     private void reorderStep(int from, int to) {
@@ -389,32 +661,204 @@ public class BotnaAccessibilityService extends AccessibilityService {
         JSONObject step = steps.optJSONObject(index); if (step == null) return;
         String type = step.optString("type");
         if (TYPE_IMAGE.equals(type)) {
-            showChoice("إعدادات هدف الصورة", new String[]{"قص نسخة/زاوية إضافية", "تعديل نسبة التطابق", "مطابقة الهدف الآن", "حذف هذه الخطوة"}, choice -> {
-                if (choice == 0) { cropStepId = step.optString("id"); beginCaptureForCrop(); }
-                else if (choice == 1) promptNumber("نسبة التطابق المطلوبة (50–99)", step.optInt("threshold", 85), 50, 99, value -> {
+            String[] options = new String[]{
+                    "عرض الزوايا المحفوظة", "تغيير الهدف الحالي", "قص زاوية إضافية",
+                    "تعديل نسبة التطابق", "إعدادات المطابقة المتقدمة", "اختبار الخطوة الآن",
+                    step.optBoolean("enabled", true) ? "تعطيل الخطوة" : "تفعيل الخطوة", "حذف الخطوة"
+            };
+            showChoice("إعدادات خطوة الصورة", options, choice -> {
+                if (choice == 0) showImageAngles(script, step, index);
+                else if (choice == 1) changeImageTarget(script, step);
+                else if (choice == 2) { cropStepId = step.optString("id"); cropCreatedNewStep = false; replaceImageTarget = false; beginCaptureForCrop(); }
+                else if (choice == 3) promptNumber("نسبة التطابق المطلوبة (50–99)", step.optInt("threshold", 85), 50, 99, value -> {
                     putInt(step, "threshold", value); BotnaStore.saveSteps(this, script, steps); rebuildPanel();
                 });
-                else if (choice == 2) testImageStep(step);
-                else deleteStep(index);
+                else if (choice == 4) editImageAdvancedSettings(script, step, steps);
+                else if (choice == 5) testStep(index);
+                else if (choice == 6) { putBoolean(step, "enabled", !step.optBoolean("enabled", true)); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); }
+                else confirmDeleteStep(index);
             });
             return;
         }
         if (TYPE_TEXT.equals(type)) {
-            promptText("تعديل النص المستهدف", step.optString("value"), value -> {
-                putString(step, "value", value); putString(step, "label", "نقر نص: " + value);
-                BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+            showChoice("إعدادات خطوة النقر على النص", new String[]{"تغيير النص المستهدف", "عدد المحاولات", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) promptText("تعديل النص المستهدف", step.optString("value"), value -> {
+                    putString(step, "value", value); putString(step, "label", "نقر نص: " + value); BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+                });
+                else if (choice == 1) promptNumber("عدد المحاولات (1–10)", step.optInt("retries", 1), 1, 10, value -> saveStepInt(script, step, "retries", value));
+                else if (choice == 2) promptNumber("انتظار قبل الخطوة (مللي ثانية)", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
+                else if (choice == 3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
+                else if (choice == 4) testStep(index);
+                else if (choice == 5) toggleStep(script, step);
+                else confirmDeleteStep(index);
             });
         } else if (TYPE_WAIT.equals(type)) {
-            promptNumber("مدة الانتظار بالمللي ثانية", step.optInt("delay", 500), 0, 60000, value -> {
-                putInt(step, "delay", value); putString(step, "label", "انتظار " + value + " ms");
-                BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+            showChoice("إعدادات الانتظار", new String[]{"تعديل مدة الانتظار", "تبديل عشوائي/ثابت", "تعديل نطاق الانتظار العشوائي", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) promptNumber("مدة الانتظار بالمللي ثانية", step.optInt("delay", 500), 0, 60000, value -> {
+                    putInt(step, "delay", value); putBoolean(step, "randomDelay", false); putString(step, "label", "انتظار " + value + " ms"); BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+                });
+                else if (choice == 1) { putBoolean(step, "randomDelay", !step.optBoolean("randomDelay", false)); BotnaStore.saveSteps(this, script, steps); report("تم تحديث وضع الانتظار."); rebuildPanel(); }
+                else if (choice == 2) promptText("أدنى وأقصى مدة (min,max)", step.optInt("minDelay", 500) + "," + step.optInt("maxDelay", 1200), value -> {
+                    String[] bounds = value.split(",");
+                    try { if (bounds.length != 2) throw new NumberFormatException(); int min = Math.max(0, Math.min(60000, Integer.parseInt(bounds[0].trim()))); int max = Math.max(min, Math.min(60000, Integer.parseInt(bounds[1].trim()))); putInt(step, "minDelay", min); putInt(step, "maxDelay", max); putBoolean(step, "randomDelay", true); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); }
+                    catch (NumberFormatException ex) { report("أدخل قيمتين صحيحتين مثل 500,1200."); }
+                });
+                else if (choice == 3) testStep(index);
+                else if (choice == 4) toggleStep(script, step);
+                else confirmDeleteStep(index);
+            });
+        } else if (TYPE_TAP.equals(type)) {
+            showChoice("إعدادات النقر بالموقع", new String[]{"تغيير الإحداثيات", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) promptText("x,y كنسب مئوية من الشاشة", step.optInt("xPercent", 50) + "," + step.optInt("yPercent", 50), value -> {
+                    String[] xy = value.split(","); try { if (xy.length != 2) throw new NumberFormatException(); putInt(step, "xPercent", Math.max(0, Math.min(100, Integer.parseInt(xy[0].trim())))); putInt(step, "yPercent", Math.max(0, Math.min(100, Integer.parseInt(xy[1].trim())))); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); } catch (NumberFormatException ex) { report("أدخل إحداثيين صحيحين مثل 50,50."); }
+                });
+                else if (choice == 1) promptNumber("انتظار قبل الخطوة (مللي ثانية)", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
+                else if (choice == 2) promptNumber("انتظار بعد التنفيذ (مللي ثانية)", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
+                else if (choice == 3) testStep(index);
+                else if (choice == 4) toggleStep(script, step);
+                else confirmDeleteStep(index);
+            });
+        } else if (TYPE_LONG_PRESS.equals(type)) {
+            showChoice("إعدادات الضغط المطوّل", new String[]{"تغيير الإحداثيات", "مدة الضغط", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(choice==0) promptText("x,y كنسب مئوية من الشاشة",step.optInt("xPercent",50)+","+step.optInt("yPercent",50),value->{
+                    String[] xy=value.split(","); try { if(xy.length!=2)throw new NumberFormatException(); putInt(step,"xPercent",Math.max(0,Math.min(100,Integer.parseInt(xy[0].trim())))); putInt(step,"yPercent",Math.max(0,Math.min(100,Integer.parseInt(xy[1].trim())))); BotnaStore.saveSteps(this,script,steps); rebuildPanel(); }
+                    catch(NumberFormatException ex){report("أدخل إحداثيين صحيحين مثل 50,50.");}
+                });
+                else if(choice==1) promptNumber("مدة الضغط بالمللي ثانية",step.optInt("duration",800),300,5000,value->saveStepInt(script,step,"duration",value));
+                else if(choice==2) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,value->saveStepInt(script,step,"beforeDelay",value));
+                else if(choice==3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,value->saveStepInt(script,step,"afterDelay",value));
+                else if(choice==4)testStep(index); else if(choice==5)toggleStep(script,step); else confirmDeleteStep(index);
+            });
+        } else if (TYPE_SWIPE.equals(type) || TYPE_SCROLL.equals(type)) {
+            showChoice("إعدادات حركة الشاشة", new String[]{"تعديل الاتجاه/المسار", "تعديل مدة الحركة", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0 && TYPE_SWIPE.equals(type)) promptText("x1,y1,x2,y2 كنسب مئوية", step.optInt("x1", 50)+","+step.optInt("y1",75)+","+step.optInt("x2",50)+","+step.optInt("y2",25), value -> {
+                    String[] a=value.split(","); try { if(a.length!=4)throw new NumberFormatException(); String[] keys={"x1","y1","x2","y2"}; for(int j=0;j<4;j++)putInt(step,keys[j],Math.max(0,Math.min(100,Integer.parseInt(a[j].trim())))); BotnaStore.saveSteps(this,script,steps); rebuildPanel(); } catch(NumberFormatException ex){report("أدخل أربع قيم صحيحة.");}
+                });
+                else if (choice == 0) showChoice("اتجاه التمرير", new String[]{"للأسفل", "للأعلى", "لليمين", "لليسار"}, dir -> { putString(step,"direction",new String[]{"down","up","right","left"}[dir]); BotnaStore.saveSteps(this,script,steps); rebuildPanel(); });
+                else if (choice == 1) promptNumber("مدة الحركة بالمللي ثانية", step.optInt("duration", 450), 100, 5000, value -> saveStepInt(script, step, "duration", value));
+                else if (choice == 2) promptNumber("انتظار قبل التنفيذ (مللي ثانية)", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
+                else if (choice == 3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
+                else if (choice == 4) testStep(index);
+                else if (choice == 5) toggleStep(script, step);
+                else confirmDeleteStep(index);
+            });
+        } else if (TYPE_TYPE_TEXT.equals(type)) {
+            showChoice("إعدادات كتابة النص", new String[]{"تعديل النص", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(choice==0) promptText("النص الذي سيُكتب",step.optString("value"),value->{putString(step,"value",value);putString(step,"label","كتابة نص: "+value);BotnaStore.saveSteps(this,script,steps);rebuildPanel();});
+                else if(choice==1) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,value->saveStepInt(script,step,"beforeDelay",value));
+                else if(choice==2) promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,value->saveStepInt(script,step,"afterDelay",value));
+                else if(choice==3)testStep(index); else if(choice==4)toggleStep(script,step); else confirmDeleteStep(index);
+            });
+        } else if (TYPE_BACK.equals(type) || TYPE_HOME.equals(type)) {
+            showChoice("إعدادات خطوة النظام", new String[]{"انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(choice==0) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,value->saveStepInt(script,step,"beforeDelay",value));
+                else if(choice==1) promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,value->saveStepInt(script,step,"afterDelay",value));
+                else if(choice==2)testStep(index); else if(choice==3)toggleStep(script,step); else confirmDeleteStep(index);
+            });
+        } else if (TYPE_REPEAT_START.equals(type)) {
+            showChoice("إعدادات التكرار", new String[]{"عدد التكرارات", "اختبار إعداد التكرار", "تفعيل/تعطيل مجموعة التكرار", "حذف بداية التكرار"}, choice -> {
+                if (choice == 0) promptNumber("عدد مرات تكرار المجموعة (1–1000)", step.optInt("repeatCount", 2), 1, 1000, value -> {
+                    putInt(step, "repeatCount", value); putString(step, "label", "بدء تكرار ×" + value); BotnaStore.saveSteps(this, script, steps); rebuildPanel();
+                });
+                else if (choice == 1) testStep(index);
+                else if (choice == 2) toggleStep(script, step);
+                else confirmDeleteStep(index);
+            });
+        } else if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
+            showChoice("إعدادات الشرط", new String[]{"تبديل شرط النجاح/الفشل", "تفعيل/تعطيل الكتلة الشرطية", "اختبار الشرط", "حذف"}, choice -> {
+                if(choice==0) { String next=TYPE_IF_SUCCESS.equals(type)?TYPE_IF_FAIL:TYPE_IF_SUCCESS; putString(step,"type",next); putString(step,"label",TYPE_IF_SUCCESS.equals(next)?"إذا نجح الإجراء السابق":"إذا فشل الإجراء السابق"); BotnaStore.saveSteps(this,script,steps); rebuildPanel(); }
+                else if(choice==1)toggleStep(script,step); else if(choice==2)testStep(index); else confirmDeleteStep(index);
             });
         } else {
-            showChoice("تعديل الخطوة", new String[]{"تعطيل/تفعيل الخطوة", "حذف هذه الخطوة"}, choice -> {
-                if (choice == 0) { putBoolean(step, "enabled", !step.optBoolean("enabled", true)); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); }
-                else deleteStep(index);
+            showChoice("إعدادات العلامة التنظيمية", new String[]{"فحص العلامة", "حذف العلامة"}, choice -> {
+                if (choice == 0) testStep(index);
+                else confirmDeleteStep(index);
             });
         }
+    }
+
+    private void saveStepInt(JSONObject script, JSONObject step, String key, int value) {
+        putInt(step, key, value); BotnaStore.saveSteps(this, script, BotnaStore.steps(script)); rebuildPanel();
+    }
+
+    private void toggleStep(JSONObject script, JSONObject step) {
+        putBoolean(step, "enabled", !step.optBoolean("enabled", true));
+        BotnaStore.saveSteps(this, script, BotnaStore.steps(script)); rebuildPanel();
+    }
+
+    private void changeImageTarget(JSONObject script, JSONObject step) {
+        // Keep the old target intact until the user successfully crops a replacement.
+        cropStepId = step.optString("id");
+        cropCreatedNewStep = false;
+        replaceImageTarget = true;
+        beginCaptureForCrop();
+    }
+
+    private void editImageAdvancedSettings(JSONObject script, JSONObject step, JSONArray steps) {
+        showChoice("إعدادات المطابقة المتقدمة", new String[]{
+                step.optBoolean("tapOnMatch", true) ? "عدم الضغط بعد العثور على الصورة" : "الضغط بعد العثور على الصورة",
+                "عدد محاولات المطابقة (1–10)", "فاصل إعادة المحاولة", "انتظار بعد المطابقة/الضغط",
+                "انتظار قبل تنفيذ الخطوة", "تعطيل/تفعيل الخطوة"
+        }, choice -> {
+            if (choice == 0) { putBoolean(step, "tapOnMatch", !step.optBoolean("tapOnMatch", true)); BotnaStore.saveSteps(this, script, steps); rebuildPanel(); }
+            else if (choice == 1) promptNumber("عدد محاولات المطابقة (1–10)", step.optInt("retries", 1), 1, 10, value -> saveStepInt(script, step, "retries", value));
+            else if (choice == 2) promptNumber("فاصل إعادة المحاولة بالمللي ثانية", step.optInt("retryDelay", 500), 100, 10000, value -> saveStepInt(script, step, "retryDelay", value));
+            else if (choice == 3) promptNumber("انتظار بعد المطابقة بالمللي ثانية", step.optInt("afterDelay", 0), 0, 60000, value -> saveStepInt(script, step, "afterDelay", value));
+            else if (choice == 4) promptNumber("انتظار قبل تنفيذ الخطوة بالمللي ثانية", step.optInt("beforeDelay", 0), 0, 60000, value -> saveStepInt(script, step, "beforeDelay", value));
+            else toggleStep(script, step);
+        });
+    }
+
+    private AlertDialog imageAnglesDialog;
+
+    private void showImageAngles(JSONObject script, JSONObject step, int stepIndex) {
+        JSONArray images = step.optJSONArray("images");
+        LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); list.setPadding(dp(10), dp(8), dp(10), dp(8));
+        ScrollView scroller = new ScrollView(this); scroller.addView(list);
+        List<Bitmap> loaded = new ArrayList<>();
+        if (images == null || images.length() == 0) {
+            list.addView(label("لا توجد زوايا محفوظة. استخدم «قص زاوية إضافية» لإضافتها.", 14, MUTED, false));
+        } else {
+            for (int i = 0; i < images.length(); i++) {
+                final int angleIndex = i;
+                final String filename = images.optString(i);
+                LinearLayout row = horizontal(); row.setPadding(dp(5), dp(5), dp(5), dp(5));
+                ImageView preview = new ImageView(this); preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                Bitmap bitmap = readTemplate(filename);
+                if (bitmap != null) {
+                    loaded.add(bitmap);
+                    Bitmap previewBitmap = Bitmap.createScaledBitmap(bitmap, dp(74), dp(56), true);
+                    if (previewBitmap != bitmap) loaded.add(previewBitmap);
+                    preview.setImageBitmap(previewBitmap);
+                }
+                row.addView(preview, new LinearLayout.LayoutParams(dp(74), dp(56)));
+                TextView label = label("زاوية " + (i + 1) + "\n" + filename, 11, TEXT, false);
+                LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1); labelLp.setMargins(dp(7), 0, dp(7), 0); row.addView(label, labelLp);
+                Button remove = button("حذف", false); row.addView(remove, new LinearLayout.LayoutParams(dp(60), dp(38)));
+                remove.setOnClickListener(v -> {
+                    AlertDialog confirm = new AlertDialog.Builder(this).setTitle("حذف الزاوية")
+                            .setMessage("هل تريد حذف الزاوية " + (angleIndex + 1) + " من خطوة الصورة؟")
+                            .setPositiveButton("حذف", (d, w) -> {
+                                JSONArray current = step.optJSONArray("images"); JSONArray next = new JSONArray();
+                                if (current != null) for (int j = 0; j < current.length(); j++) if (j != angleIndex) next.put(current.optString(j));
+                                try { step.put("images", next); } catch (JSONException ignored) { }
+                                BotnaStore.saveSteps(this, script, BotnaStore.steps(script));
+                                report("تم حذف الزاوية من خطوة الصورة.");
+                                if (imageAnglesDialog != null && imageAnglesDialog.isShowing()) imageAnglesDialog.dismiss();
+                                showImageAngles(script, step, stepIndex);
+                            }).setNegativeButton("إلغاء", (d, w) -> { }).create();
+                    try { if (confirm.getWindow() != null) confirm.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); confirm.show(); }
+                    catch (Exception e) { report("تعذر فتح تأكيد حذف الزاوية."); }
+                });
+                list.addView(row);
+            }
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("الزوايا المحفوظة")
+                .setView(scroller).setPositiveButton("إغلاق", (d,w)->{}).create();
+        imageAnglesDialog = dialog;
+        dialog.setOnDismissListener(d -> { for (Bitmap b : loaded) if (b != null && !b.isRecycled()) b.recycle(); });
+        try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
+        catch (Exception e) { report("تعذر عرض زوايا الصورة."); }
     }
 
     private void chooseScriptDialog() {
@@ -463,18 +907,32 @@ public class BotnaAccessibilityService extends AccessibilityService {
     // ---------------- Screenshot crop with transparent resizable frame ----------------
     private void prepareCropStep() {
         JSONObject script = ensureScript(); JSONArray steps = BotnaStore.steps(script); JSONObject target = null;
-        for (int i = steps.length() - 1; i >= 0; i--) {
+        // All target crops belong to the first image step; never create a separate
+        // step merely to add another angle to an existing target.
+        for (int i = 0; i < steps.length(); i++) {
             JSONObject item = steps.optJSONObject(i);
-            if (item != null && TYPE_IMAGE.equals(item.optString("type"))) { target = item; break; }
+            if (item != null && TYPE_IMAGE.equals(item.optString("type"))
+                    && !item.optBoolean("waitForImageOnly", false)) {
+                target = item;
+                break;
+            }
         }
-        if (target == null) target = addStep(TYPE_IMAGE, "مطابقة صورة الهدف");
+        if (target == null) {
+            target = addStep(TYPE_IMAGE, "مطابقة صورة الهدف");
+            cropCreatedNewStep = true;
+        } else {
+            cropCreatedNewStep = false;
+        }
         cropStepId = target.optString("id");
+        replaceImageTarget = false;
         rebuildPanel();
         beginCaptureForCrop();
     }
 
     private void beginCaptureForCrop() {
         if (Build.VERSION.SDK_INT < 30) {
+            replaceImageTarget = false;
+            discardEmptyCreatedCropStep();
             report("قص الصور يحتاج Android 11 أو أحدث لدعم لقطة الشاشة عبر خدمة إمكانية الوصول.");
             return;
         }
@@ -482,6 +940,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         handler.postDelayed(() -> takeScreenshot(new ScreenshotCallback() {
             @Override public void done(Bitmap screenshot, String error) {
                 if (screenshot == null) {
+                    replaceImageTarget = false;
+                    discardEmptyCreatedCropStep();
                     showBubble(); showPanel(); report("تعذر التقاط الشاشة: " + error); return;
                 }
                 showCropSelector(screenshot);
@@ -523,7 +983,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 PixelFormat.TRANSLUCENT);
         p.gravity = Gravity.TOP | Gravity.START;
         try { wm.addView(cropSelector, p); }
-        catch (Exception e) { cropSelector = null; screenshot.recycle(); showBubble(); showPanel(); report("تعذر فتح أداة القص."); }
+        catch (Exception e) { cropSelector = null; replaceImageTarget = false; screenshot.recycle(); showBubble(); showPanel(); report("تعذر فتح أداة القص."); }
     }
 
     private void finishCrop(Bitmap screenshot, RectF selection, int viewWidth, int viewHeight) {
@@ -561,9 +1021,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 JSONObject step = steps.optJSONObject(i);
                 if (step != null && cropStepId.equals(step.optString("id"))) {
                     JSONArray images = step.optJSONArray("images");
+                    if (replaceImageTarget) images = new JSONArray();
                     if (images == null) images = new JSONArray();
                     images.put(fileName);
                     step.put("images", images);
+                    step.put("label", "مطابقة صورة الهدف");
+                    replaceImageTarget = false;
                     found = true;
                     break;
                 }
@@ -573,12 +1036,17 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 JSONArray images = new JSONArray();
                 images.put(fileName);
                 step.put("images", images);
-                steps = BotnaStore.steps(ensureScript());
+                saveStepObject(step);
+                JSONObject refreshed = ensureScript();
+                steps = BotnaStore.steps(refreshed);
             }
             BotnaStore.saveSteps(this, ensureScript(), steps);
+            cropCreatedNewStep = false;
             report("تم قص الهدف وحفظ الصورة بنجاح.");
 
         } catch (Exception e) {
+            replaceImageTarget = false;
+            discardEmptyCreatedCropStep();
             report("تعذر حفظ الهدف: " + e.getClass().getSimpleName() + " — " + e.getMessage());
         } finally {
             // Critical crash fix: detach the drawing view BEFORE releasing its bitmap.
@@ -605,7 +1073,28 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
     }
 
+    private void discardEmptyCreatedCropStep() {
+        if (!cropCreatedNewStep || cropStepId == null || cropStepId.isEmpty()) return;
+        String id = cropStepId;
+        cropCreatedNewStep = false;
+        JSONObject script = ensureScript();
+        JSONArray old = BotnaStore.steps(script);
+        JSONArray next = new JSONArray();
+        boolean removed = false;
+        for (int i = 0; i < old.length(); i++) {
+            JSONObject item = old.optJSONObject(i);
+            if (item != null && id.equals(item.optString("id"))) {
+                JSONArray images = item.optJSONArray("images");
+                if (images == null || images.length() == 0) { removed = true; continue; }
+            }
+            next.put(item);
+        }
+        if (removed) BotnaStore.saveSteps(this, script, next);
+    }
+
     private void cancelCrop(Bitmap screenshot) {
+        replaceImageTarget = false;
+        discardEmptyCreatedCropStep();
         // Detach the view first; never recycle a bitmap while CropSelector can still draw it.
         View oldSelector = cropSelector;
         removeView(oldSelector);
@@ -702,67 +1191,231 @@ public class BotnaAccessibilityService extends AccessibilityService {
         void done(ImageMatcher.Result result, String error);
     }
 
-    private void testImageStep(JSONObject step) {
-        captureAppScreenshot((screen, error) -> {
-            if (screen == null) {
-                report("فشل فحص الصورة: " + error);
-                return;
-            }
-            findMatchAsync(screen, step, (result, matchError) -> {
-                if (matchError != null) {
-                    report("تعذر تشغيل محرك المطابقة: " + matchError);
-                } else if (result != null && result.score >= step.optInt("threshold", 85)) {
-                    report("تم العثور على الهدف بنسبة " + result.score + "% عند X=" + result.x + ", Y=" + result.y + ".");
-                } else {
-                    report("لم يصل التطابق إلى الحد المطلوب. أفضل تطابق: " + (result == null ? 0 : result.score) + "%.");
-                }
-            });
-        });
-    }
-
-    private void findMatchAsync(Bitmap screen, JSONObject step, MatchCallback callback) {
-        final JSONObject stepCopy;
-        try {
-            stepCopy = new JSONObject(step.toString());
-        } catch (JSONException e) {
-            if (screen != null && !screen.isRecycled()) screen.recycle();
-            callback.done(null, "تعذر قراءة إعدادات الخطوة");
-            return;
-        }
-
-        try {
-            matcherExecutor.execute(() -> {
-                ImageMatcher.Result result = null;
-                String error = null;
-                try {
-                    result = matchStep(screen, stepCopy);
-                } catch (Throwable t) {
-                    error = t.getClass().getSimpleName() +
-                            (t.getMessage() == null ? "" : ": " + t.getMessage());
-                } finally {
-                    if (screen != null && !screen.isRecycled()) screen.recycle();
-                }
-
-                ImageMatcher.Result finalResult = result;
-                String finalError = error;
-                handler.post(() -> callback.done(finalResult, finalError));
-            });
-        } catch (RuntimeException e) {
-            if (screen != null && !screen.isRecycled()) screen.recycle();
-            callback.done(null, "تعذر بدء عامل المطابقة");
-        }
-    }
+    private interface ActionResultCallback { void done(boolean success, String message); }
 
     private void runActiveScript() {
-        if (running) { report("السكربت يعمل بالفعل."); return; }
-        JSONObject script = ensureScript(); JSONArray steps = BotnaStore.steps(script);
-        if (steps.length() == 0) { report("أضف خطوات قبل التشغيل."); return; }
-        running = true; lastStepSuccess = true; runStep(script.optString("id"), 0, new ArrayDeque<>());
+        if (running) { report(paused ? "السكربت متوقف مؤقتًا؛ استخدم الاستكمال." : "السكربت يعمل بالفعل."); return; }
+        JSONObject script = ensureScript();
+        JSONArray scriptSteps = BotnaStore.steps(script);
+        if (scriptSteps.length() == 0) { report("أضف خطوات قبل التشغيل."); return; }
+        String structureError = validateScriptStructure(scriptSteps);
+        if (structureError != null) { report("لم يبدأ السكربت: " + structureError); return; }
+        panelWasVisibleAtRunStart = panelVisible;
+        currentScriptId = script.optString("id", "");
+        currentStepIndex = 0;
+        currentBranches = new ArrayDeque<>();
+        currentLoops = new ArrayDeque<>();
+        lastStepSuccess = true;
+        paused = false;
+        running = true;
+        executionInFlight = false;
+        executionGeneration++;
+        hidePanel();
+        removeView(bubble); bubble = null;
+        report("بدأ تنفيذ السكربت من الخطوة الأولى.");
+        showRunControls();
+        runStep();
+    }
+
+    private void pauseScript() {
+        if (!running || paused) return;
+        paused = true;
+        report("تم الإيقاف المؤقت عند الخطوة " + (currentStepIndex + 1) + ". اضغط استكمال للمتابعة من الموضع نفسه.");
+        showRunControls();
+    }
+
+    private void resumeScript() {
+        if (!running || !paused) return;
+        paused = false;
+        report("استُكمل السكربت من الخطوة " + (currentStepIndex + 1) + ".");
+        showRunControls();
+        if (!executionInFlight) runStep();
+    }
+
+    private void restartScript() {
+        if (!running) { runActiveScript(); return; }
+        executionGeneration++; // invalidate any screenshot/matcher callback from the old run
+        currentStepIndex = 0;
+        currentBranches = new ArrayDeque<>();
+        currentLoops = new ArrayDeque<>();
+        lastStepSuccess = true;
+        paused = false;
+        executionInFlight = false;
+        report("إعادة تشغيل السكربت من البداية.");
+        showRunControls();
+        runStep();
+    }
+
+    private void stopScript() {
+        if (!running && !singleStepTesting) { report("لا يوجد تنفيذ لإيقافه."); return; }
+        executionGeneration++;
+        running = false; paused = false; executionInFlight = false;
+        currentBranches.clear(); currentLoops.clear();
+        singleStepTesting = false;
+        removeView(runControls); runControls = null;
+        report("تم إيقاف التنفيذ نهائيًا.");
+        showBubble();
+        if (panelWasVisibleAtRunStart) showPanel();
+    }
+
+    private void showRunControls() {
+        if (wm == null || !running) return;
+        removeView(runControls); runControls = null;
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER);
+        bar.setPadding(dp(7), dp(6), dp(7), dp(6));
+        bar.setBackground(glassShape(Color.argb(224, 8, 14, 24), Color.argb(235, 35, 226, 244), 1, 24));
+        bar.setElevation(dp(15));
+        Button pause = button(paused ? "▶ استكمال" : "Ⅱ مؤقت", true);
+        Button restart = button("↻ من البداية", false);
+        Button stop = button("■ إيقاف", false);
+        bar.addView(pause, new LinearLayout.LayoutParams(0, dp(40), 1));
+        bar.addView(restart, new LinearLayout.LayoutParams(0, dp(40), 1));
+        bar.addView(stop, new LinearLayout.LayoutParams(0, dp(40), 1));
+        pause.setOnClickListener(v -> { if (paused) resumeScript(); else pauseScript(); });
+        restart.setOnClickListener(v -> restartScript());
+        stop.setOnClickListener(v -> stopScript());
+        int width = Math.min(getResources().getDisplayMetrics().widthPixels - dp(20), dp(350));
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(width, dp(58),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        params.y = dp(86);
+        try { wm.addView(bar, params); runControls = bar; }
+        catch (Exception e) { saveResult("تعذر إظهار أزرار التحكم أثناء التشغيل."); }
+    }
+
+    private void runStep() {
+        if (!running) return;
+        if (paused) { executionInFlight = false; showRunControls(); return; }
+        if (executionInFlight) return;
+        JSONObject script = BotnaStore.getScript(this, currentScriptId);
+        if (script == null) { finishScript("توقف السكربت: لم يتم العثور على تعريفه المحفوظ."); return; }
+        JSONArray steps = BotnaStore.steps(script);
+        if (currentStepIndex >= steps.length()) {
+            finishScript("اكتمل السكربت من البداية إلى النهاية. آخر خطوة: " + (lastStepSuccess ? "نجاح" : "فشل") + ".");
+            return;
+        }
+        JSONObject step = steps.optJSONObject(currentStepIndex);
+        if (step == null) { scheduleNext(executionGeneration, 0); return; }
+        String type = step.optString("type", "");
+        int generation = executionGeneration;
+        boolean enabled = step.optBoolean("enabled", true);
+        boolean activeBefore = branchAllowed(currentBranches) && loopsAllowed(currentLoops);
+
+        // Conditional markers always keep the structure balanced. Disabling an IF
+        // skips the complete conditional block; ELSE/END_IF remain structural.
+        if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
+            boolean condition = TYPE_IF_SUCCESS.equals(type) ? lastStepSuccess : !lastStepSuccess;
+            currentBranches.push(new Branch(activeBefore && enabled, condition));
+            scheduleNext(generation, 0); return;
+        }
+        if (TYPE_ELSE.equals(type)) {
+            if (!currentBranches.isEmpty()) currentBranches.peek().inElse = true;
+            scheduleNext(generation, 0); return;
+        }
+        if (TYPE_END_IF.equals(type)) {
+            if (!currentBranches.isEmpty()) currentBranches.pop();
+            scheduleNext(generation, 0); return;
+        }
+
+        // Repeat blocks can be nested. Inactive or disabled loops still push a
+        // frame so their END marker cannot accidentally close an outer loop.
+        if (TYPE_REPEAT_START.equals(type)) {
+            int count = Math.max(1, Math.min(1000, step.optInt("repeatCount", 2)));
+            currentLoops.push(new LoopFrame(currentStepIndex, count, activeBefore && enabled));
+            scheduleNext(generation, 0); return;
+        }
+        if (TYPE_REPEAT_END.equals(type)) {
+            if (currentLoops.isEmpty()) { finishScript("خطأ في بنية التكرار: لا توجد بداية تكرار لهذا الموضع."); return; }
+            LoopFrame frame = currentLoops.peek();
+            if (!frame.active) {
+                currentLoops.pop();
+                scheduleNext(generation, 0); return;
+            }
+            if (frame.remaining > 1) {
+                frame.remaining--;
+                currentStepIndex = frame.startIndex;
+                scheduleNext(generation, 0); return;
+            }
+            currentLoops.pop();
+            scheduleNext(generation, 0); return;
+        }
+
+        if (!enabled) {
+            report("تجاوز خطوة معطّلة رقم " + (currentStepIndex + 1) + ".");
+            scheduleNext(generation, 0); return;
+        }
+        if (!activeBefore) { scheduleNext(generation, 0); return; }
+
+        executionInFlight = true;
+        // Keep controls available during the pre-action delay. Screenshot and
+        // gesture helpers hide them only at the moment they would obstruct the action.
+        showRunControls();
+        int beforeDelay = Math.max(0, Math.min(60000, step.optInt("beforeDelay", 0)));
+        Runnable action = () -> {
+            if (generation != executionGeneration || !running) return;
+            if (paused) { executionInFlight = false; showRunControls(); return; }
+            executeActionStep(step, type, generation);
+        };
+        if (beforeDelay > 0) handler.postDelayed(action, beforeDelay); else action.run();
     }
 
     private static final class Branch {
-        final boolean parentAllowed; final boolean matched; boolean inElse;
-        Branch(boolean parentAllowed, boolean matched) { this.parentAllowed=parentAllowed; this.matched=matched; }
+        final boolean parentAllowed;
+        final boolean matched;
+        boolean inElse;
+        Branch(boolean parentAllowed, boolean matched) { this.parentAllowed = parentAllowed; this.matched = matched; }
+    }
+
+    private static final class LoopFrame {
+        final int startIndex;
+        int remaining;
+        final boolean active;
+        LoopFrame(int startIndex, int remaining, boolean active) {
+            this.startIndex = startIndex; this.remaining = remaining; this.active = active;
+        }
+    }
+
+    private static final class StructureFrame {
+        final String type;
+        boolean hasElse;
+        StructureFrame(String type) { this.type = type; }
+    }
+
+    private String validateScriptStructure(JSONArray steps) {
+        Deque<StructureFrame> stack = new ArrayDeque<>();
+        for (int i = 0; i < steps.length(); i++) {
+            JSONObject step = steps.optJSONObject(i);
+            if (step == null) return "تعريف الخطوة رقم " + (i + 1) + " غير صالح.";
+            String type = step.optString("type", "");
+            if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
+                stack.push(new StructureFrame("IF"));
+            } else if (TYPE_REPEAT_START.equals(type)) {
+                stack.push(new StructureFrame("REPEAT"));
+            } else if (TYPE_ELSE.equals(type)) {
+                if (stack.isEmpty() || !"IF".equals(stack.peek().type))
+                    return "خطوة «وإلا» رقم " + (i + 1) + " غير مرتبطة بشرط مفتوح أو تأتي بترتيب غير صحيح.";
+                if (stack.peek().hasElse)
+                    return "يوجد أكثر من «وإلا» لنفس الشرط عند الخطوة رقم " + (i + 1) + ".";
+                stack.peek().hasElse = true;
+            } else if (TYPE_END_IF.equals(type)) {
+                if (stack.isEmpty() || !"IF".equals(stack.peek().type))
+                    return "خطوة «نهاية الشرط» رقم " + (i + 1) + " لا تطابق شرطًا مفتوحًا.";
+                stack.pop();
+            } else if (TYPE_REPEAT_END.equals(type)) {
+                if (stack.isEmpty() || !"REPEAT".equals(stack.peek().type))
+                    return "خطوة «نهاية التكرار» رقم " + (i + 1) + " لا تطابق بداية تكرار مفتوحة.";
+                stack.pop();
+            }
+        }
+        if (!stack.isEmpty()) {
+            StructureFrame frame = stack.peek();
+            return "هناك " + ("IF".equals(frame.type) ? "شرط" : "تكرار") + " لم تُضف له علامة نهاية. أكمل البنية قبل التشغيل.";
+        }
+        return null;
     }
 
     private boolean branchAllowed(Deque<Branch> branches) {
@@ -773,104 +1426,265 @@ public class BotnaAccessibilityService extends AccessibilityService {
         return true;
     }
 
-    private void runStep(String scriptId, int index, Deque<Branch> branches) {
-        if (!running) return;
-        JSONObject script = BotnaStore.getScript(this, scriptId);
-        if (script == null) { running=false; report("لم يتم العثور على السكربت."); return; }
-        JSONArray steps = BotnaStore.steps(script);
-        if (index >= steps.length()) { running=false; report("انتهى السكربت. آخر خطوة: " + (lastStepSuccess ? "نجاح" : "فشل") + "."); return; }
-        JSONObject step = steps.optJSONObject(index);
-        if (step == null) { runStep(scriptId,index+1,branches); return; }
-        if (!step.optBoolean("enabled", true)) { handler.post(() -> runStep(scriptId,index+1,branches)); return; }
-        String type = step.optString("type");
-        boolean activeBefore = branchAllowed(branches);
-        if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
-            boolean condition = TYPE_IF_SUCCESS.equals(type) ? lastStepSuccess : !lastStepSuccess;
-            branches.push(new Branch(activeBefore, condition));
-            handler.post(() -> runStep(scriptId,index+1,branches)); return;
-        }
-        if (TYPE_ELSE.equals(type)) {
-            if (!branches.isEmpty()) branches.peek().inElse = true;
-            handler.post(() -> runStep(scriptId,index+1,branches)); return;
-        }
-        if (TYPE_END_IF.equals(type)) {
-            if (!branches.isEmpty()) branches.pop();
-            handler.post(() -> runStep(scriptId,index+1,branches)); return;
-        }
-        if (!activeBefore) { handler.post(() -> runStep(scriptId,index+1,branches)); return; }
+    private boolean loopsAllowed(Deque<LoopFrame> loops) {
+        for (LoopFrame loop : loops) if (!loop.active) return false;
+        return true;
+    }
 
+    private void executeActionStep(JSONObject step, String type, int generation) {
         if (TYPE_TEXT.equals(type)) {
-            boolean ok = clickText(step.optString("value")); lastStepSuccess = ok;
+            boolean ok = false;
+            int retries = Math.max(1, Math.min(10, step.optInt("retries", 1)));
+            for (int i = 0; i < retries && !ok; i++) ok = clickText(step.optString("value"));
+            lastStepSuccess = ok;
             report(ok ? "نجحت خطوة النقر على النص: " + step.optString("value") : "فشلت خطوة النقر على النص: " + step.optString("value"));
-            handler.post(() -> runStep(scriptId,index+1,branches));
+            scheduleAfterAction(generation, step);
         } else if (TYPE_BACK.equals(type)) {
-            lastStepSuccess = performGlobalAction(GLOBAL_ACTION_BACK); report(lastStepSuccess ? "نجحت خطوة الرجوع." : "فشلت خطوة الرجوع.");
-            handler.post(() -> runStep(scriptId,index+1,branches));
+            lastStepSuccess = performGlobalAction(GLOBAL_ACTION_BACK);
+            report(lastStepSuccess ? "نجحت خطوة الرجوع." : "فشلت خطوة الرجوع."); scheduleAfterAction(generation, step);
         } else if (TYPE_HOME.equals(type)) {
-            lastStepSuccess = performGlobalAction(GLOBAL_ACTION_HOME); report(lastStepSuccess ? "تم أمر الرئيسية." : "فشل أمر الرئيسية.");
-            handler.post(() -> runStep(scriptId,index+1,branches));
+            lastStepSuccess = performGlobalAction(GLOBAL_ACTION_HOME);
+            report(lastStepSuccess ? "تم أمر الرئيسية." : "فشل أمر الرئيسية."); scheduleAfterAction(generation, step);
         } else if (TYPE_WAIT.equals(type)) {
-            int delay = Math.max(0, Math.min(60000, step.optInt("delay",500))); lastStepSuccess=true;
-            handler.postDelayed(() -> runStep(scriptId,index+1,branches), delay);
+            int delay;
+            if (step.optBoolean("randomDelay", false)) {
+                int min = Math.max(0, Math.min(60000, step.optInt("minDelay", 500)));
+                int max = Math.max(min, Math.min(60000, step.optInt("maxDelay", min)));
+                delay = min + (max == min ? 0 : (int) (Math.random() * (max - min + 1)));
+            } else delay = Math.max(0, Math.min(60000, step.optInt("delay", 500)));
+            lastStepSuccess = true;
+            report("تنفيذ انتظار لمدة " + delay + " ms."); scheduleNext(generation, delay);
         } else if (TYPE_IMAGE.equals(type)) {
-            captureAppScreenshot((screen, error) -> {
-                if (screen == null) {
-                    lastStepSuccess = false;
-                    report("فشل التقاط الشاشة للمطابقة: " + error);
-                    handler.post(() -> runStep(scriptId, index + 1, branches));
+            runImageMatch(step, 0, generation, (ok, message) -> {
+                if (!running || generation != executionGeneration) return;
+                lastStepSuccess = ok; report(message);
+                scheduleAfterAction(generation, step);
+            });
+        } else if (TYPE_TAP.equals(type)) {
+            int width = getResources().getDisplayMetrics().widthPixels;
+            int height = getResources().getDisplayMetrics().heightPixels;
+            int x = Math.max(0, Math.min(width - 1, width * step.optInt("xPercent", 50) / 100));
+            int y = Math.max(0, Math.min(height - 1, height * step.optInt("yPercent", 50) / 100));
+            performTap(x, y, ok -> { if (!running || generation != executionGeneration) return; lastStepSuccess = ok; report(ok ? "نجح النقر بالموقع المحدد." : "فشل النقر بالموقع المحدد."); scheduleAfterAction(generation, step); });
+        } else if (TYPE_LONG_PRESS.equals(type)) {
+            int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+            int x=Math.max(0,Math.min(width-1,width*step.optInt("xPercent",50)/100));
+            int y=Math.max(0,Math.min(height-1,height*step.optInt("yPercent",50)/100));
+            performLongPress(x,y,step.optInt("duration",800),ok->{if(!running||generation!=executionGeneration)return;lastStepSuccess=ok;report(ok?"نجح الضغط المطوّل.":"فشل الضغط المطوّل.");scheduleAfterAction(generation,step);});
+        } else if (TYPE_SWIPE.equals(type)) {
+            performSwipe(step.optInt("x1", 50), step.optInt("y1", 75), step.optInt("x2", 50), step.optInt("y2", 25), step.optInt("duration", 450), ok -> {
+                if (!running || generation != executionGeneration) return; lastStepSuccess = ok; report(ok ? "اكتملت حركة السحب." : "فشلت حركة السحب."); scheduleAfterAction(generation, step);
+            });
+        } else if (TYPE_SCROLL.equals(type)) {
+            String direction = step.optString("direction", "down");
+            int x1=50,y1=75,x2=50,y2=25;
+            if ("up".equals(direction)) { y1=25; y2=75; }
+            else if ("right".equals(direction)) { x1=25; x2=75; y1=50; y2=50; }
+            else if ("left".equals(direction)) { x1=75; x2=25; y1=50; y2=50; }
+            performSwipe(x1,y1,x2,y2,step.optInt("duration",420),ok->{if(!running||generation!=executionGeneration)return;lastStepSuccess=ok;report(ok?"نجح تمرير الشاشة.":"فشل تمرير الشاشة.");scheduleAfterAction(generation,step);});
+        } else if (TYPE_TYPE_TEXT.equals(type)) {
+            lastStepSuccess = typeTextIntoFocusedField(step.optString("value", ""));
+            report(lastStepSuccess ? "تمت كتابة النص في الحقل المركّز." : "فشلت كتابة النص: لا يوجد حقل إدخال مركّز أو لا يدعم الكتابة."); scheduleAfterAction(generation, step);
+        } else {
+            lastStepSuccess = false; report("نوع خطوة غير معروف: " + type); scheduleNext(generation, 0);
+        }
+    }
+
+    private void scheduleAfterAction(int generation, JSONObject step) {
+        int configured = Math.max(0, Math.min(60000, step.optInt("afterDelay", 0)));
+        // Give the compact pause/stop controls a real interaction window between
+        // actions, while preserving any longer delay chosen for this step.
+        scheduleNext(generation, Math.max(CONTROL_GAP_MS, configured));
+    }
+
+    private void scheduleNext(int generation, int delayMs) {
+        if (generation != executionGeneration || !running) return;
+        currentStepIndex++;
+        executionInFlight = true;
+        long delay = Math.max(1, delayMs);
+        if (delayMs > 0) showRunControls();
+        handler.postDelayed(() -> {
+            if (generation != executionGeneration || !running) return;
+            executionInFlight = false;
+            if (paused) showRunControls(); else runStep();
+        }, delay);
+    }
+
+    private void finishScript(String message) {
+        running = false; paused = false; executionInFlight = false;
+        currentBranches.clear(); currentLoops.clear();
+        executionGeneration++;
+        removeView(runControls); runControls = null;
+        report(message);
+        showBubble();
+        if (panelWasVisibleAtRunStart) showPanel();
+    }
+
+    private void testStep(int index) {
+        if (running || singleStepTesting) { report("أوقف التنفيذ الحالي قبل اختبار خطوة منفردة."); return; }
+        JSONObject script = ensureScript(); JSONObject original = BotnaStore.steps(script).optJSONObject(index);
+        if (original == null) return;
+        final JSONObject step;
+        try { step = new JSONObject(original.toString()); }
+        catch (JSONException e) { report("تعذر تجهيز اختبار الخطوة."); return; }
+        panelWasVisibleBeforeSingleTest = panelVisible;
+        singleStepTesting = true;
+        executionGeneration++;
+        final int generation = executionGeneration;
+        hidePanel(); removeView(bubble); bubble = null;
+        String type = step.optString("type", "");
+        report("اختبار منفرد للخطوة " + (index + 1) + ": " + step.optString("label", type));
+        Runnable testAction = () -> {
+            if (generation != executionGeneration || !singleStepTesting) return;
+            if (TYPE_IMAGE.equals(type)) {
+                runImageMatch(step, 0, generation, (ok, message) -> finishSingleStepTest(generation, message));
+            } else if (TYPE_TEXT.equals(type)) {
+                boolean ok = false;
+                int retries = Math.max(1, Math.min(10, step.optInt("retries", 1)));
+                for (int i = 0; i < retries && !ok; i++) ok = clickText(step.optString("value", ""));
+                finishSingleStepTest(generation, ok ? "نجح اختبار النقر على النص." : "فشل اختبار النقر على النص.");
+            } else if (TYPE_BACK.equals(type)) {
+                boolean ok = performGlobalAction(GLOBAL_ACTION_BACK); finishSingleStepTest(generation, ok ? "نجح اختبار الرجوع." : "فشل اختبار الرجوع.");
+            } else if (TYPE_HOME.equals(type)) {
+                boolean ok = performGlobalAction(GLOBAL_ACTION_HOME); finishSingleStepTest(generation, ok ? "نجح اختبار الرئيسية." : "فشل اختبار الرئيسية.");
+            } else if (TYPE_WAIT.equals(type)) {
+                int delay;
+                if (step.optBoolean("randomDelay", false)) {
+                    int min = Math.max(0, Math.min(60000, step.optInt("minDelay", 500)));
+                    int max = Math.max(min, Math.min(60000, step.optInt("maxDelay", min)));
+                    delay = min + (max == min ? 0 : (int) (Math.random() * (max - min + 1)));
+                } else delay = Math.max(0, Math.min(60000, step.optInt("delay", 500)));
+                handler.postDelayed(() -> finishSingleStepTest(generation, "نجح اختبار الانتظار (" + delay + " ms)."), delay);
+            } else if (TYPE_TAP.equals(type)) {
+                int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+                int x=Math.max(0,Math.min(width-1,width*step.optInt("xPercent",50)/100));
+                int y=Math.max(0,Math.min(height-1,height*step.optInt("yPercent",50)/100));
+                performTap(x,y,ok->finishSingleStepTest(generation,ok?"نجح اختبار النقر بالموقع.":"فشل اختبار النقر بالموقع."));
+            } else if (TYPE_LONG_PRESS.equals(type)) {
+                int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+                int x=Math.max(0,Math.min(width-1,width*step.optInt("xPercent",50)/100));
+                int y=Math.max(0,Math.min(height-1,height*step.optInt("yPercent",50)/100));
+                performLongPress(x,y,step.optInt("duration",800),ok->finishSingleStepTest(generation,ok?"نجح اختبار الضغط المطوّل.":"فشل اختبار الضغط المطوّل."));
+            } else if (TYPE_SWIPE.equals(type)) {
+                performSwipe(step.optInt("x1",50),step.optInt("y1",75),step.optInt("x2",50),step.optInt("y2",25),step.optInt("duration",450),ok->finishSingleStepTest(generation,ok?"نجح اختبار السحب.":"فشل اختبار السحب."));
+            } else if (TYPE_SCROLL.equals(type)) {
+                String d=step.optString("direction","down"); int x1=50,y1=75,x2=50,y2=25;
+                if("up".equals(d)){y1=25;y2=75;}else if("right".equals(d)){x1=25;x2=75;y1=50;y2=50;}else if("left".equals(d)){x1=75;x2=25;y1=50;y2=50;}
+                performSwipe(x1,y1,x2,y2,step.optInt("duration",420),ok->finishSingleStepTest(generation,ok?"نجح اختبار التمرير.":"فشل اختبار التمرير."));
+            } else if (TYPE_TYPE_TEXT.equals(type)) {
+                boolean ok=typeTextIntoFocusedField(step.optString("value","")); finishSingleStepTest(generation,ok?"نجح اختبار كتابة النص.":"فشل اختبار كتابة النص.");
+            } else if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
+                boolean condition = TYPE_IF_SUCCESS.equals(type) ? lastStepSuccess : !lastStepSuccess;
+                finishSingleStepTest(generation, "اختبار الشرط: " + (condition ? "سيتحقق الشرط بناءً على نتيجة الخطوة السابقة." : "لن يتحقق الشرط بناءً على نتيجة الخطوة السابقة."));
+            } else if (TYPE_REPEAT_START.equals(type)) {
+                finishSingleStepTest(generation, "تعريف التكرار صالح مبدئيًا: ستتكرر الكتلة " + Math.max(1, Math.min(1000, step.optInt("repeatCount", 2))) + " مرة عند تشغيل السكربت كاملًا.");
+            } else if (TYPE_REPEAT_END.equals(type) || TYPE_ELSE.equals(type) || TYPE_END_IF.equals(type)) {
+                finishSingleStepTest(generation, "هذه علامة بنيوية؛ تُختبر مطابقتها عند التحقق من بنية السكربت قبل التشغيل.");
+            } else {
+                finishSingleStepTest(generation, "هذه علامة تنظيمية لا تنفّذ فعلًا منفردًا؛ تم التحقق من تعريفها.");
+            }
+        };
+        int beforeDelay = Math.max(0, Math.min(60000, step.optInt("beforeDelay", 0)));
+        if (beforeDelay > 0) handler.postDelayed(testAction, beforeDelay); else testAction.run();
+    }
+
+    private void finishSingleStepTest(int generation, String message) {
+        if (generation != executionGeneration || !singleStepTesting) return;
+        singleStepTesting = false;
+        report(message);
+        showBubble();
+        if (panelWasVisibleBeforeSingleTest) showPanel();
+    }
+
+    private void runImageMatch(JSONObject step, int attempt, int generation, ActionResultCallback callback) {
+        if (generation != executionGeneration || !(running || singleStepTesting)) return;
+        if (running && paused) { executionInFlight = false; showRunControls(); return; }
+        captureAppScreenshot((screen, error) -> {
+            if (generation != executionGeneration || !(running || singleStepTesting)) { if (screen != null && !screen.isRecycled()) screen.recycle(); return; }
+            if (running && paused) {
+                if (screen != null && !screen.isRecycled()) screen.recycle();
+                executionInFlight = false; showRunControls(); return;
+            }
+            if (screen == null) {
+                retryImageOrFinish(step, attempt, generation, callback, false, "فشل التقاط الشاشة للمطابقة: " + error);
+                return;
+            }
+            // The screen pixels have already been captured, so controls can safely
+            // reappear while OpenCV compares the bitmap in the background.
+            if (running) showRunControls();
+            findMatchAsync(screen, step, (match, matchError) -> {
+                if (generation != executionGeneration || !(running || singleStepTesting)) return;
+                if (running && paused) { executionInFlight = false; showRunControls(); return; }
+                if (matchError != null) {
+                    retryImageOrFinish(step, attempt, generation, callback, false, "تعذر تشغيل محرك المطابقة: " + matchError); return;
+                }
+                boolean matched = match != null && match.score >= step.optInt("threshold", 85);
+                if (!matched) {
+                    retryImageOrFinish(step, attempt, generation, callback, false,
+                            "لم يتحقق تطابق الصورة. أفضل نتيجة " + (match == null ? 0 : match.score) + "% (المطلوب " + step.optInt("threshold",85) + "%).");
                     return;
                 }
-                findMatchAsync(screen, step, (match, matchError) -> {
-                    if (matchError != null) {
-                        lastStepSuccess = false;
-                        report("تعذر تشغيل المطابقة: " + matchError);
-                        handler.post(() -> runStep(scriptId, index + 1, branches));
-                        return;
-                    }
-                    boolean matched = match != null && match.score >= step.optInt("threshold", 85);
-                    if (!matched) {
-                        lastStepSuccess = false;
-                        report("فشلت مطابقة الصورة؛ أفضل نتيجة " + (match == null ? 0 : match.score) + "%");
-                        handler.post(() -> runStep(scriptId, index + 1, branches));
-                    } else {
-                        report("تم العثور على الهدف بنسبة " + match.score + "%؛ جارٍ الضغط على مركزه.");
-                        tapMatchedTarget(match, ok -> {
-                            lastStepSuccess = ok;
-                            report(ok ? "نجحت مطابقة الصورة والضغط على الهدف." : "تم العثور على الصورة لكن فشل تنفيذ الضغط.");
-                            handler.post(() -> runStep(scriptId, index + 1, branches));
-                        });
-                    }
-                });
+                if (!step.optBoolean("tapOnMatch", true)) {
+                    callback.done(true, "تم العثور على الصورة بنسبة " + match.score + "% دون الضغط عليها.");
+                } else {
+                    tapMatchedTarget(match, ok -> {
+                        if (generation != executionGeneration || !(running || singleStepTesting)) return;
+                        callback.done(ok, ok ? "تم العثور على الهدف والضغط عليه بنسبة تطابق " + match.score + "% ." : "تم العثور على الصورة لكن فشل الضغط عليها.");
+                    });
+                }
             });
-        } else { lastStepSuccess=false; handler.post(() -> runStep(scriptId,index+1,branches)); }
+        });
+    }
+
+    private void retryImageOrFinish(JSONObject step, int attempt, int generation, ActionResultCallback callback, boolean unused, String message) {
+        if (running && paused) { executionInFlight = false; showRunControls(); return; }
+        int retries = Math.max(1, Math.min(10, step.optInt("retries", 1)));
+        if (attempt + 1 < retries) {
+            report(message + " إعادة المحاولة " + (attempt + 2) + "/" + retries + "…");
+            int delay = Math.max(100, Math.min(10000, step.optInt("retryDelay", 500)));
+            if (running) showRunControls();
+            handler.postDelayed(() -> runImageMatch(step, attempt + 1, generation, callback), delay);
+        } else callback.done(false, message + " انتهت المحاولات (" + retries + ").");
+    }
+
+    private void findMatchAsync(Bitmap screen, JSONObject step, MatchCallback callback) {
+        final JSONObject stepCopy;
+        try { stepCopy = new JSONObject(step.toString()); }
+        catch (JSONException e) { if (screen != null && !screen.isRecycled()) screen.recycle(); callback.done(null, "تعذر قراءة إعدادات الخطوة"); return; }
+        try {
+            matcherExecutor.execute(() -> {
+                ImageMatcher.Result result = null; String error = null;
+                try { result = matchStep(screen, stepCopy); }
+                catch (Throwable t) { error = t.getClass().getSimpleName() + (t.getMessage() == null ? "" : ": " + t.getMessage()); }
+                finally { if (screen != null && !screen.isRecycled()) screen.recycle(); }
+                ImageMatcher.Result finalResult = result; String finalError = error;
+                handler.post(() -> callback.done(finalResult, finalError));
+            });
+        } catch (RuntimeException e) {
+            if (screen != null && !screen.isRecycled()) screen.recycle(); callback.done(null, "تعذر بدء عامل المطابقة");
+        }
     }
 
     private ImageMatcher.Result matchStep(Bitmap screen, JSONObject step) {
         JSONArray images = step.optJSONArray("images");
         if (images == null || images.length() == 0) return null;
-
         List<ImageMatcher.NamedBitmap> templates = new ArrayList<>();
         for (int i = 0; i < images.length(); i++) {
-            String name = images.optString(i);
-            Bitmap bitmap = readTemplate(name);
+            String name = images.optString(i); Bitmap bitmap = readTemplate(name);
             if (bitmap != null) templates.add(new ImageMatcher.NamedBitmap(name, bitmap));
         }
-
-        try {
-            return ImageMatcher.find(screen, templates, step.optInt("threshold", 85));
-        } finally {
-            for (ImageMatcher.NamedBitmap item : templates) {
-                if (item.bitmap != null && !item.bitmap.isRecycled()) item.bitmap.recycle();
-            }
-        }
+        try { return ImageMatcher.find(screen, templates, step.optInt("threshold", 85)); }
+        finally { for (ImageMatcher.NamedBitmap item : templates) if (item.bitmap != null && !item.bitmap.isRecycled()) item.bitmap.recycle(); }
     }
 
     private void captureAppScreenshot(ScreenshotCallback callback) {
-        if (Build.VERSION.SDK_INT < 30) { callback.done(null,"يتطلب Android 11 أو أحدث"); return; }
+        if (Build.VERSION.SDK_INT < 30) { callback.done(null, "يتطلب Android 11 أو أحدث"); return; }
         boolean wasPanel = panelVisible;
+        boolean shouldRestoreUi = !running && !singleStepTesting;
         hidePanel(); removeView(bubble); bubble = null;
+        if (running) { removeView(runControls); runControls = null; }
         handler.postDelayed(() -> takeScreenshot((bitmap,error) -> {
-            showBubble(); if (wasPanel) showPanel();
+            if (shouldRestoreUi) { showBubble(); if (wasPanel) showPanel(); }
             callback.done(bitmap,error);
         }), 180);
     }
@@ -879,27 +1693,90 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void tapMatchedTarget(ImageMatcher.Result match, GestureCallback callback) {
         if (Build.VERSION.SDK_INT < 24 || match == null) { callback.done(false); return; }
-        boolean wasPanel = panelVisible;
+        removeView(runControls); runControls = null;
         hidePanel(); removeView(bubble); bubble = null;
         handler.postDelayed(() -> {
             try {
-                Path path = new Path();
-                float x = match.x + match.width / 2f;
-                float y = match.y + match.height / 2f;
+                Path path = new Path(); float x = match.x + match.width / 2f; float y = match.y + match.height / 2f;
                 path.moveTo(x, y); path.lineTo(x + 1f, y + 1f);
-                GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 90);
-                GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
+                GestureDescription gesture = new GestureDescription.Builder()
+                        .addStroke(new GestureDescription.StrokeDescription(path, 0, 90)).build();
                 boolean dispatched = dispatchGesture(gesture, new GestureResultCallback() {
-                    @Override public void onCompleted(GestureDescription description) {
-                        showBubble(); if (wasPanel) showPanel(); callback.done(true);
-                    }
-                    @Override public void onCancelled(GestureDescription description) {
-                        showBubble(); if (wasPanel) showPanel(); callback.done(false);
-                    }
+                    @Override public void onCompleted(GestureDescription description) { callback.done(true); }
+                    @Override public void onCancelled(GestureDescription description) { callback.done(false); }
                 }, handler);
-                if (!dispatched) { showBubble(); if (wasPanel) showPanel(); callback.done(false); }
-            } catch (Exception e) { showBubble(); if (wasPanel) showPanel(); callback.done(false); }
-        }, 140);
+                if (!dispatched) callback.done(false);
+            } catch (Exception e) { callback.done(false); }
+        }, 100);
+    }
+
+    private void performTap(int x, int y, GestureCallback callback) {
+        if (Build.VERSION.SDK_INT < 24) { callback.done(false); return; }
+        removeView(runControls); runControls = null;
+        hidePanel(); removeView(bubble); bubble = null;
+        handler.postDelayed(() -> {
+            try {
+                Path path = new Path(); path.moveTo(x,y); path.lineTo(x+1,y+1);
+                GestureDescription gesture = new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path,0,80)).build();
+                boolean sent=dispatchGesture(gesture,new GestureResultCallback(){
+                    @Override public void onCompleted(GestureDescription d){callback.done(true);}
+                    @Override public void onCancelled(GestureDescription d){callback.done(false);}
+                },handler);
+                if(!sent)callback.done(false);
+            } catch(Exception e){callback.done(false);}
+        },80);
+    }
+
+    private void performLongPress(int x, int y, int duration, GestureCallback callback) {
+        if (Build.VERSION.SDK_INT < 24) { callback.done(false); return; }
+        removeView(runControls); runControls = null;
+        hidePanel(); removeView(bubble); bubble = null;
+        handler.postDelayed(() -> {
+            try {
+                Path path = new Path(); path.moveTo(x, y); path.lineTo(x + 1, y + 1);
+                GestureDescription gesture = new GestureDescription.Builder()
+                        .addStroke(new GestureDescription.StrokeDescription(path, 0, Math.max(300, Math.min(5000, duration))))
+                        .build();
+                boolean sent = dispatchGesture(gesture, new GestureResultCallback() {
+                    @Override public void onCompleted(GestureDescription d) { callback.done(true); }
+                    @Override public void onCancelled(GestureDescription d) { callback.done(false); }
+                }, handler);
+                if (!sent) callback.done(false);
+            } catch (Exception e) { callback.done(false); }
+        }, 80);
+    }
+
+    private void performSwipe(int x1p, int y1p, int x2p, int y2p, int duration, GestureCallback callback) {
+        if (Build.VERSION.SDK_INT < 24) { callback.done(false); return; }
+        int width=getResources().getDisplayMetrics().widthPixels, height=getResources().getDisplayMetrics().heightPixels;
+        float x1=width*Math.max(0,Math.min(100,x1p))/100f, y1=height*Math.max(0,Math.min(100,y1p))/100f;
+        float x2=width*Math.max(0,Math.min(100,x2p))/100f, y2=height*Math.max(0,Math.min(100,y2p))/100f;
+        removeView(runControls); runControls = null;
+        hidePanel(); removeView(bubble); bubble = null;
+        handler.postDelayed(() -> {
+            try {
+                Path path=new Path(); path.moveTo(x1,y1); path.lineTo(x2,y2);
+                GestureDescription gesture=new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path,0,Math.max(100,Math.min(5000,duration)))).build();
+                boolean sent=dispatchGesture(gesture,new GestureResultCallback(){
+                    @Override public void onCompleted(GestureDescription d){callback.done(true);}
+                    @Override public void onCancelled(GestureDescription d){callback.done(false);}
+                },handler);
+                if(!sent)callback.done(false);
+            } catch(Exception e){callback.done(false);}
+        },80);
+    }
+
+    private boolean typeTextIntoFocusedField(String value) {
+        AccessibilityNodeInfo root=findTargetRoot(); if(root==null)return false;
+        AccessibilityNodeInfo focused=null;
+        try {
+            focused=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if(focused==null || !focused.isEditable())return false;
+            android.os.Bundle args=new android.os.Bundle();
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,value);
+            return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args);
+        } catch(Exception e){return false;}
+        finally { if(focused!=null)focused.recycle(); root.recycle(); }
     }
 
     private boolean clickText(String target) {
