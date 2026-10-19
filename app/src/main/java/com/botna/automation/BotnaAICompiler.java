@@ -11,6 +11,8 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.graphics.Rect;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -18,6 +20,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.ScrollView;
 import android.widget.Toast;
 
 import org.json.JSONArray;
@@ -38,6 +41,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.security.MessageDigest;
 
 /**
  * Provider-agnostic Arabic/Pale​stinian natural-language plan compiler.
@@ -48,6 +54,7 @@ public final class BotnaAICompiler {
     private static final String PROVIDER_KEY = "ai_provider_id_v2";
     private static final String MODEL_PREFIX = "ai_model_v2_";
     private static final String ENDPOINT_PREFIX = "ai_endpoint_v2_";
+    private static final String KEY_COOLDOWN_PREFIX = "ai_key_cooldown_until_v1_";
 
     public static final String PROVIDER_GITHUB_MODELS = "github_models";
     public static final String PROVIDER_OPENAI_COMPAT = "openai_compatible"; // legacy/custom-compatible profile
@@ -166,12 +173,24 @@ public final class BotnaAICompiler {
 
         String userText = "مكتبة الصور المتاحة، أرقامها وأسماؤها (لا تختَر رقمًا خارجها): " + libraryForPrompt(library)
                 + "\n\nالأمر المكتوب باللهجة الفلسطينية المطلوب ترجمته إلى خطة تنفيذ دقيقة:\n" + (instructions == null ? "" : instructions.trim());
+        if (screenContext != null) {
+            userText += "\n\nأبعاد لقطة الشاشة الأصلية: " + screenContext.getWidth() + "×" + screenContext.getHeight()
+                    + " بكسل. قد تُرسل الصورة مصغرة مع الحفاظ على نسبة الأبعاد لتسريع النقل وتقليل حجم البيانات؛ لا تستنتج إحداثيات بكسلية من حجم الصورة المرفقة. أعد مواقع العناصر كنسب مئوية من الشاشة الأصلية الكاملة (0-100)، مع مراعاة شريط الحالة وشريط التنقل.";
+        }
         String encodedImage = screenContext == null ? null : bitmapToJpegBase64(screenContext);
         int startIndex = BotnaKeyVault.activeIndex(context, provider, keys.size());
         Exception lastFailure = null;
-        for (int attempt = 0; attempt < keys.size(); attempt++) {
-            int keyIndex = (startIndex + attempt) % keys.size();
+        int attemptedKeys = 0;
+        long earliestCooldown = Long.MAX_VALUE;
+        for (int offset = 0; offset < keys.size(); offset++) {
+            int keyIndex = (startIndex + offset) % keys.size();
             String apiKey = keys.get(keyIndex);
+            long cooldownUntil = keyCooldownUntil(context, provider, apiKey);
+            if (cooldownUntil > System.currentTimeMillis()) {
+                earliestCooldown = Math.min(earliestCooldown, cooldownUntil);
+                continue;
+            }
+            attemptedKeys++;
             try {
                 JSONObject plan;
                 try {
@@ -181,16 +200,30 @@ public final class BotnaAICompiler {
                     plan = requestPlan(provider, endpoint, apiKey, model, userText, null);
                     JSONArray warnings = plan.optJSONArray("warnings");
                     if (warnings == null) { warnings = new JSONArray(); plan.put("warnings", warnings); }
-                    warnings.put("المزوّد أو النموذج لم يقبل صورة الشاشة؛ تُرجمت التعليمات دون سياق بصري مباشر. جرّب نموذجًا يدعم الرؤية.");
+                    warnings.put("المزوّد أو النموذج لم يقبل صورة الشاشة؛ تُرجمت التعليمات دون سياق بصري مباشر. اختر نموذجًا يدعم الصور لتحليل موثوق.");
                 }
                 BotnaKeyVault.noteSuccessfulKey(context, provider, apiKey);
                 return plan;
             } catch (Exception ex) {
                 lastFailure = ex;
                 if (!shouldRotateKey(ex)) throw ex;
+                long cooldownMs = keyCooldownDurationMillis(ex);
+                if (cooldownMs > 0) {
+                    long until = System.currentTimeMillis() + cooldownMs;
+                    setKeyCooldown(context, provider, apiKey, until);
+                    earliestCooldown = Math.min(earliestCooldown, until);
+                }
                 BotnaKeyVault.setActiveIndex(context, provider, (keyIndex + 1) % keys.size());
-                if (attempt + 1 >= keys.size()) throw ex;
             }
+        }
+        boolean allKeysCooling = !keys.isEmpty();
+        for (String candidateKey : keys) {
+            if (keyCooldownUntil(context, provider, candidateKey) <= System.currentTimeMillis()) { allKeysCooling = false; break; }
+        }
+        if ((attemptedKeys == 0 || allKeysCooling) && earliestCooldown != Long.MAX_VALUE) {
+            String retryAt = new java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new java.util.Date(earliestCooldown));
+            String lastDetail = lastFailure == null || lastFailure.getMessage() == null ? "" : " آخر رد من المزوّد: " + lastFailure.getMessage();
+            throw new IllegalStateException("لا يوجد مفتاح لهذا المزوّد متاح الآن. جُرّبت المفاتيح المحفوظة وأُوقفت إعادة المحاولة مؤقتًا لتجنّب تكرار أخطاء الحصة. أقرب موعد محفوظ لإعادة المحاولة: " + retryAt + ". إذا كانت مفاتيح Gemini كلها من المشروع نفسه فستشارك الحصة ذاتها؛ جرّب مشروعًا/مزوّدًا لديه حصة متاحة أو انتظر إعادة الضبط." + lastDetail);
         }
         if (lastFailure != null) throw lastFailure;
         throw new IllegalStateException("لم ينجح أي مفتاح محفوظ لهذا المزوّد.");
@@ -239,6 +272,45 @@ public final class BotnaAICompiler {
                 || message.contains("quota") || message.contains("rate limit") || message.contains("resource_exhausted")
                 || message.contains("insufficient_quota") || message.contains("billing") || message.contains("exceeded your")
                 || message.contains("invalid api key") || message.contains("unauthorized") || message.contains("too many requests");
+    }
+
+    /** Rate limits are cooled down per key so repeated agent screenshots do not hammer an exhausted quota. */
+    private static long keyCooldownDurationMillis(Exception error) {
+        String message = String.valueOf(error == null ? "" : error.getMessage());
+        String lower = message.toLowerCase(Locale.ROOT);
+        boolean rateLimited = lower.contains("http 429") || lower.contains("quota") || lower.contains("rate limit")
+                || lower.contains("resource_exhausted") || lower.contains("insufficient_quota")
+                || lower.contains("exceeded your") || lower.contains("too many requests");
+        if (!rateLimited) return 0L;
+        Matcher matcher = Pattern.compile("retry\\s+in\\s+(?:(\\d+)h)?\\s*(?:(\\d+)m)?\\s*(?:(\\d+(?:\\.\\d+)?)s)?", Pattern.CASE_INSENSITIVE).matcher(message);
+        if (matcher.find()) {
+            long hours = parseLong(matcher.group(1));
+            long minutes = parseLong(matcher.group(2));
+            double seconds = parseDouble(matcher.group(3));
+            long ms = (hours * 3600L + minutes * 60L) * 1000L + (long) (seconds * 1000.0d);
+            return Math.max(1000L, Math.min(24L * 60L * 60L * 1000L, ms));
+        }
+        return 60_000L;
+    }
+
+    private static long parseLong(String value) { try { return value == null || value.isEmpty() ? 0L : Long.parseLong(value); } catch (Exception ignored) { return 0L; } }
+    private static double parseDouble(String value) { try { return value == null || value.isEmpty() ? 0d : Double.parseDouble(value); } catch (Exception ignored) { return 0d; } }
+
+    private static String keyCooldownPref(Context context, String provider, String key) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest((key == null ? "" : key).getBytes(StandardCharsets.UTF_8));
+        StringBuilder hex = new StringBuilder();
+        for (int i = 0; i < 8; i++) hex.append(String.format(Locale.ROOT, "%02x", digest[i] & 0xff));
+        return KEY_COOLDOWN_PREFIX + provider + "_" + hex;
+    }
+
+    private static long keyCooldownUntil(Context context, String provider, String key) {
+        try { return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(keyCooldownPref(context, provider, key), 0L); }
+        catch (Exception ignored) { return 0L; }
+    }
+
+    private static void setKeyCooldown(Context context, String provider, String key, long until) {
+        try { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(keyCooldownPref(context, provider, key), until).apply(); }
+        catch (Exception ignored) { }
     }
 
     private static JSONObject requestPlan(String provider, String endpoint, String apiKey, String model, String userText, String imageBase64) throws Exception {
@@ -438,13 +510,14 @@ public final class BotnaAICompiler {
         Bitmap scaled = source;
         boolean copied = false;
         int maxSide = Math.max(source.getWidth(), source.getHeight());
-        if (maxSide > 1200) {
-            float ratio = 1200f / maxSide;
+        // Keep enough resolution for small controls/text on tall phone screens while cutting JPEG payload.
+        if (maxSide > 1440) {
+            float ratio = 1440f / maxSide;
             scaled = Bitmap.createScaledBitmap(source, Math.max(1, Math.round(source.getWidth() * ratio)), Math.max(1, Math.round(source.getHeight() * ratio)), true);
             copied = scaled != source;
         }
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            if (!scaled.compress(Bitmap.CompressFormat.JPEG, 72, out)) throw new IllegalStateException("تعذر تجهيز لقطة الشاشة للإرسال");
+            if (!scaled.compress(Bitmap.CompressFormat.JPEG, 64, out)) throw new IllegalStateException("تعذر تجهيز لقطة الشاشة للإرسال");
             return android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP);
         } finally { if (copied && !scaled.isRecycled()) scaled.recycle(); }
     }
@@ -501,7 +574,7 @@ public final class BotnaAICompiler {
             case PROVIDER_GROQ: return "openai/gpt-oss-120b";
             case PROVIDER_OPENAI_RESPONSES: return "gpt-5.4-mini";
             case PROVIDER_ANTHROPIC: return "claude-sonnet-4-5";
-            case PROVIDER_GEMINI: return "gemini-2.5-flash";
+            case PROVIDER_GEMINI: return "gemini-3.8-flash";
             case PROVIDER_CUSTOM: return "model-name";
             case PROVIDER_COPILOT_BRIDGE: return "gpt-5.4";
             default: return "model-name";
@@ -669,7 +742,7 @@ public final class BotnaAICompiler {
             model.setText(draft == null ? savedOrDefault(context, MODEL_PREFIX + id, defaultModel(id)) : draft[1]);
             key.setText(draft == null ? "" : draft[2]);
             int savedKeyCount = BotnaKeyVault.count(context, id);
-            status.setText(savedKeyCount > 0 ? "✓ يوجد " + savedKeyCount + " مفتاح/مفاتيح محفوظة ومشفّرة؛ سيبدّل التطبيق بينها تلقائيًا عند نفاد الحصة أو رفض المفتاح." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.");
+            status.setText(savedKeyCount > 0 ? "✓ يوجد " + savedKeyCount + " مفتاح/مفاتيح محفوظة ومشفّرة؛ سيجرّب التطبيق المفاتيح المتاحة، لكن مفاتيح Gemini من المشروع نفسه تشترك في الحصة." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.");
             refreshKeyPreview.run();
             if (PROVIDER_GITHUB_MODELS.equals(id)) {
                 help.setText("GitHub Models: أدخل GitHub token صالحًا واسم نموذج متاحًا لحسابك. الحصة المجانية وحدود النماذج تتغير حسب شروط GitHub.");
@@ -798,13 +871,70 @@ public final class BotnaAICompiler {
             }, "Botna-Provider-Test").start();
         });
 
+        // Keep primary actions outside the scroll area so they remain visible above the keyboard.
+        ScrollView settingsScroll = new ScrollView(context);
+        settingsScroll.setFillViewport(false);
+        settingsScroll.setVerticalScrollBarEnabled(true);
+        settingsScroll.setSmoothScrollingEnabled(true);
+        settingsScroll.setClipToPadding(false);
+        settingsScroll.addView(container, new ScrollView.LayoutParams(-1, -2));
+
+        LinearLayout dialogRoot = new LinearLayout(context);
+        dialogRoot.setOrientation(LinearLayout.VERTICAL);
+        dialogRoot.setPadding(0, 0, 0, 0);
+        dialogRoot.addView(settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        Button saveSettingsButton = smallGlassButton(context, "حفظ الإعدادات");
+        saveSettingsButton.setTextSize(14);
+        LinearLayout.LayoutParams saveActionLp = new LinearLayout.LayoutParams(-1, Math.round(48 * context.getResources().getDisplayMetrics().density));
+        saveActionLp.leftMargin = pad / 2; saveActionLp.rightMargin = pad / 2; saveActionLp.topMargin = pad / 4;
+        dialogRoot.addView(saveSettingsButton, saveActionLp);
+
+        LinearLayout secondaryActions = new LinearLayout(context);
+        secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
+        Button clearKeysButton = smallGlassButton(context, "مسح مفاتيح المزوّد");
+        clearKeysButton.setTextSize(11);
+        Button closeSettingsButton = smallGlassButton(context, "إغلاق");
+        closeSettingsButton.setTextSize(12);
+        secondaryActions.addView(clearKeysButton, new LinearLayout.LayoutParams(0, Math.round(44 * context.getResources().getDisplayMetrics().density), 1f));
+        LinearLayout.LayoutParams closeActionLp = new LinearLayout.LayoutParams(0, Math.round(44 * context.getResources().getDisplayMetrics().density), 1f);
+        closeActionLp.leftMargin = pad / 3; secondaryActions.addView(closeSettingsButton, closeActionLp);
+        LinearLayout.LayoutParams secondaryActionsLp = new LinearLayout.LayoutParams(-1, -2);
+        secondaryActionsLp.leftMargin = pad / 2; secondaryActionsLp.rightMargin = pad / 2; secondaryActionsLp.topMargin = pad / 4; secondaryActionsLp.bottomMargin = pad / 3;
+        dialogRoot.addView(secondaryActions, secondaryActionsLp);
+
         AlertDialog dialog = new AlertDialog.Builder(context).setTitle("مركز إعدادات مزوّدي الذكاء الاصطناعي")
-                .setView(container).setPositiveButton("حفظ الإعدادات", null)
-                .setNeutralButton("مسح جميع مفاتيح هذا المزوّد", null).setNegativeButton("إغلاق", null).create();
+                .setView(dialogRoot).create();
         try {
             if (dialog.getWindow() != null && accessibilityOverlay) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
+            if (dialog.getWindow() != null) dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
             dialog.show();
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+                android.util.DisplayMetrics screen = context.getResources().getDisplayMetrics();
+                int width = Math.min(screen.widthPixels - Math.round(24 * screen.density), Math.round(560 * screen.density));
+                int height = Math.min(screen.heightPixels - Math.round(48 * screen.density), Math.round(screen.heightPixels * 0.78f));
+                dialog.getWindow().setLayout(Math.max(1, width), Math.max(1, height));
+            }
+            closeSettingsButton.setOnClickListener(v -> dialog.dismiss());
+            View.OnFocusChangeListener scrollToFocusedInput = (v, focused) -> {
+                if (!focused) return;
+                settingsScroll.postDelayed(() -> {
+                    try {
+                        Rect rect = new Rect(0, 0, v.getWidth(), v.getHeight());
+                        settingsScroll.offsetDescendantRectToMyCoords(v, rect);
+                        int targetY = Math.max(0, rect.bottom - settingsScroll.getHeight() + Math.round(36 * context.getResources().getDisplayMetrics().density));
+                        settingsScroll.smoothScrollTo(0, targetY);
+                    } catch (Exception ignored) { }
+                }, 350);
+            };
+            endpoint.setOnFocusChangeListener(scrollToFocusedInput);
+            model.setOnFocusChangeListener(scrollToFocusedInput);
+            key.setOnFocusChangeListener(scrollToFocusedInput);
+            endpoint.setOnClickListener(v -> scrollToFocusedInput.onFocusChange(v, true));
+            model.setOnClickListener(v -> scrollToFocusedInput.onFocusChange(v, true));
+            key.setOnClickListener(v -> scrollToFocusedInput.onFocusChange(v, true));
+            saveSettingsButton.setOnClickListener(v -> {
                 stashCurrent[0].run();
                 int index = providerSpinner.getSelectedItemPosition(); if (index < 0 || index >= ids.length) return;
                 String selected = ids[index];
@@ -822,7 +952,12 @@ public final class BotnaAICompiler {
                     dialog.dismiss(); if (onSaved != null) onSaved.run();
                 } catch (Exception e) { Toast.makeText(context, "تعذر حفظ الإعدادات: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
             });
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            clearKeysButton.setOnClickListener(v -> {
+                try {
+                    InputMethodManager imm = (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (imm != null && key.getWindowToken() != null) imm.hideSoftInputFromWindow(key.getWindowToken(), 0);
+                    key.clearFocus();
+                } catch (Exception ignored) { }
                 int index = providerSpinner.getSelectedItemPosition(); if (index < 0 || index >= ids.length) return;
                 String selected = ids[index];
                 AlertDialog confirm = new AlertDialog.Builder(context).setTitle("مسح مفاتيح المزوّد")
