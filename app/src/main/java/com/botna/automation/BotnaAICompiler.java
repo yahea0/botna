@@ -31,7 +31,11 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -46,7 +50,10 @@ public final class BotnaAICompiler {
     private static final String ENDPOINT_PREFIX = "ai_endpoint_v2_";
 
     public static final String PROVIDER_GITHUB_MODELS = "github_models";
-    public static final String PROVIDER_OPENAI_COMPAT = "openai_compatible";
+    public static final String PROVIDER_OPENAI_COMPAT = "openai_compatible"; // legacy/custom-compatible profile
+    public static final String PROVIDER_DEEPSEEK = "deepseek";
+    public static final String PROVIDER_OPENROUTER = "openrouter";
+    public static final String PROVIDER_GROQ = "groq";
     public static final String PROVIDER_OPENAI_RESPONSES = "openai_responses";
     public static final String PROVIDER_ANTHROPIC = "anthropic_messages";
     public static final String PROVIDER_GEMINI = "gemini_generate";
@@ -60,10 +67,10 @@ public final class BotnaAICompiler {
 
     private static final String SYSTEM_INSTRUCTIONS =
             "أنت محرك ترجمة أوامر احترافي لتطبيق أتمتة أندرويد اسمه Botna. المستخدم يتحدث العربية بلهجة فلسطينية، وقد يستخدم العامية الفلسطينية أو أخطاء إملائية أو تعبيرات غير مرتبة. استنبط قصده العملي دون تغيير الهدف، وطبّع اللهجة إلى أوامر دقيقة. " +
-            "أخرج JSON صالحًا فقط بالشكل {\"steps\":[{\"action\":\"...\",\"image_index\":1,\"app_name\":\"\",\"text\":\"\",\"delay_ms\":0,\"duration_ms\":800,\"x_percent\":50,\"y_percent\":50,\"direction\":\"up\",\"count\":1,\"url\":\"https://...\",\"message\":\"...\",\"attempts\":3,\"max_attempts\":120,\"interval_ms\":5000,\"timeout_ms\":4000,\"sound\":true}],\"warnings\":[\"...\"]}. لا تخرج Java أو shell أو JavaScript أو SQL أو كودًا عامًا. كل عنصر خطوة واحدة فقط وبترتيب التنفيذ. " +
-            "الأفعال الوحيدة المسموحة: launch_app, open_url, find_image, tap_image, click_text, type_text, press_enter, wait, wait_for_text, wait_for_input, tap_at, long_press_at, scroll, back, home, check_internet, wait_for_internet, notify, if_success, if_fail, else, end_if, repeat_start, repeat_end. " +
+            "أخرج JSON صالحًا فقط بالشكل {\"steps\":[{\"action\":\"...\",\"image_index\":1,\"app_name\":\"\",\"text\":\"\",\"delay_ms\":0,\"duration_ms\":800,\"x_percent\":50,\"y_percent\":50,\"x1_percent\":50,\"y1_percent\":75,\"x2_percent\":50,\"y2_percent\":25,\"direction\":\"up\",\"count\":1,\"url\":\"https://...\",\"message\":\"...\",\"attempts\":3,\"max_attempts\":120,\"interval_ms\":5000,\"timeout_ms\":4000,\"sound\":true}],\"warnings\":[\"...\"]}. لا تخرج Java أو shell أو JavaScript أو SQL أو كودًا عامًا. كل عنصر خطوة واحدة فقط وبترتيب التنفيذ. أعِد أيضًا before_delay_ms وafter_delay_ms عندما يحتاج تسلسل الواجهة إلى مهلة، ولا تجعلها صفرًا افتراضيًا إذا كان فتح التطبيق أو انتقال الشاشة يتطلب انتظارًا. " +
+            "الأفعال الوحيدة المسموحة: launch_app, open_url, find_image, tap_image, click_text, type_text, clear_text, press_enter, wait, wait_for_text, check_text, wait_for_input, tap_at, long_press_at, swipe, scroll, back, home, open_notifications, open_quick_settings, open_recent_apps, dismiss_notifications, close_recent_apps, check_internet, wait_for_internet, notify, if_success, if_fail, else, end_if, repeat_start, repeat_end. " +
             "استخدم launch_app لفتح تطبيق مثبت؛ اسم التطبيق يوضع في app_name. استخدم open_url لرابط HTTP/HTTPS فقط؛ لصفحة الراوتر استخدم الرابط الذي ذكره المستخدم ولا تخمّن بيانات الدخول أو زر إعادة التشغيل. لا تدّعِ أن تطبيقًا أو زرًا موجود إذا لم يتأكد ذلك. استخدم find_image للعثور على قالب دون النقر، وtap_image للعثور والنقر. image_index هو رقم القالب من مكتبة الصور المعطاة. استخدم click_text فقط للنصوص التي يمكن الوصول إليها عبر Accessibility؛ بعض الألعاب مثل Unity ترسم النصوص داخل صور، ففيها فضّل قالب الصورة أو إحداثياتها. " +
-            "استخدم wait_for_text لانتظار ظهور نص محدد في شجرة إمكانية الوصول وwait_for_input لانتظار ظهور حقل قابل للتحرير؛ لا تستخدم انتظارًا ثابتًا إذا طلب المستخدم صراحةً الانتظار حتى يظهر العنصر. استخدم type_text لكتابة النص الحرفي المحدد في حقل إدخال مركّز؛ لا تضف أو تغيّر النص بين علامتي الاقتباس. يستخدم التطبيق ACTION_SET_TEXT ثم اللصق الاحتياطي إذا احتاج الأمر، وليس محاكاة كل ضغطة مفتاح فعلية. استخدم press_enter لإرسال فعل Enter/بحث في الحقل إن كان التطبيق يدعمه، وإلا انقر زر البحث الظاهر. استخدم tap_at وlong_press_at بإحداثيات نسبية من 0 إلى 100. wait.delay_ms بين 0 و60000، وlong_press_at.duration_ms بين 300 و5000، وrepeat_start.count بين 1 و1000. " +
+            "استخدم wait_for_text لانتظار ظهور نص محدد في شجرة إمكانية الوصول وwait_for_input لانتظار ظهور حقل قابل للتحرير؛ لا تستخدم انتظارًا ثابتًا إذا طلب المستخدم صراحةً الانتظار حتى يظهر العنصر. استخدم type_text لكتابة النص الحرفي المحدد في حقل إدخال مركّز؛ لا تضف أو تغيّر النص بين علامتي الاقتباس. يستخدم التطبيق ACTION_SET_TEXT ثم اللصق الاحتياطي إذا احتاج الأمر، وليس محاكاة كل ضغطة مفتاح فعلية. استخدم press_enter لإرسال فعل Enter/بحث في الحقل إن كان التطبيق يدعمه، وإلا انقر زر البحث الظاهر. استخدم tap_at وlong_press_at بإحداثيات نسبية من 0 إلى 100. استخدم swipe عندما يحدد المستخدم نقطة بداية ونهاية، وأرسل x1_percent وy1_percent وx2_percent وy2_percent وduration_ms؛ أما scroll فهو تمرير قياسي حسب الاتجاه. استخدم check_text للتحقق الفوري من ظهور النص (محاولة واحدة)، وwait_for_text للانتظار حتى يظهر النص. استخدم clear_text لمسح حقل البحث/الإدخال المركّز. استخدم open_notifications لسحب لوحة الإشعارات، وopen_quick_settings لفتح الإعدادات السريعة، وopen_recent_apps لعرض التطبيقات الأخيرة، وdismiss_notifications لإغلاق لوحة الإشعارات إذا دعم إصدار أندرويد ذلك. wait.delay_ms بين 0 و60000، وlong_press_at.duration_ms بين 300 و5000، وrepeat_start.count بين 1 و1000. " +
             "check_internet يرسل طلب HTTP(S) صغيرًا إلى اختبار اتصال ويراجع الاستجابة؛ اكتب attempts (1–20) وinterval_ms وtimeout_ms. wait_for_internet يعيد الفحص حتى يعود الاتصال أو تنفد max_attempts؛ استخدم فاصلًا واقعيًا مثل 5000 مللي ثانية. بعد النجاح، استخدم if_success ثم notify لإظهار رسالة وتشغيل تنبيه صوتي. بعد الفشل النهائي استخدم if_fail. لا تدّعِ أن ظهور إشارة Wi-Fi يعني وجود إنترنت. " +
             "مثال: 'إذا لقيت الصورة 4 استنى ثانيتين وبعدين ارجع' => find_image للصورة 4، ثم if_success، ثم wait 2000، ثم back، ثم end_if. 'إذا ما لقيتها اعمل كذا وإلا...' يجب أن تعكس الشرط بدقة. مثال الشبكة: check_internet attempts=3 interval_ms=5000 ثم if_fail ثم open_url بعنوان صفحة الراوتر الذي أعطاه المستخدم، ولا تختلق خطوات إدارة الراوتر أو كلمة المرور؛ اتبع فقط الأزرار المتحقق منها في الشاشة. مثال انتظار العودة: wait_for_internet max_attempts=120 interval_ms=5000 ثم if_success ثم notify برسالة النجاح. اجعل كل كتلة شرط وتكرار متداخلة متوازنة، واستخدم else/end_if/repeat_end صراحة. لا تبتكر صورًا أو أسماء تطبيقات أو أفعالًا غير مدعومة. " +
             "إذا كان وصف المستخدم ملتبسًا، اختر فقط ما تدعمه العبارة بثقة وأضف تحذيرًا بالعربية يذكر الجزء غير المؤكد؛ لا تخمّن عملية خطرة. لا تنفّذ عمليات شراء أو مدفوعات أو حذف بيانات أو إرسال رسائل خارجية تلقائيًا؛ اطلب تأكيدًا عبر تحذير بدل إنشاء تنفيذ غير قابل للتراجع. " +
@@ -76,15 +83,22 @@ public final class BotnaAICompiler {
 
     public static String providerId(Context context) {
         String saved = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PROVIDER_KEY, "");
-        if (saved != null && !saved.trim().isEmpty()) return saved.trim();
+        if (saved != null && !saved.trim().isEmpty()) {
+            if (PROVIDER_GITHUB_MODELS.equals(saved.trim())) return PROVIDER_GEMINI;
+            return saved.trim();
+        }
         // Keep older installations using an existing OpenAI key on the old endpoint.
         if (!BotnaKeyVault.load(context).isEmpty()) return PROVIDER_OPENAI_RESPONSES;
-        return PROVIDER_GITHUB_MODELS;
+        // GitHub Models is retired; use the separate Gemini profile for fresh installs.
+        return PROVIDER_GEMINI;
     }
 
     public static String providerLabel(String id) {
         if (PROVIDER_GITHUB_MODELS.equals(id)) return "GitHub Models — حصة مجانية حسب الحدود";
-        if (PROVIDER_OPENAI_COMPAT.equals(id)) return "OpenAI-compatible — DeepSeek / OpenRouter / Groq";
+        if (PROVIDER_OPENAI_COMPAT.equals(id)) return "مزود متوافق قديم/مخصص";
+        if (PROVIDER_DEEPSEEK.equals(id)) return "DeepSeek API";
+        if (PROVIDER_OPENROUTER.equals(id)) return "OpenRouter API";
+        if (PROVIDER_GROQ.equals(id)) return "Groq API";
         if (PROVIDER_OPENAI_RESPONSES.equals(id)) return "OpenAI Responses API";
         if (PROVIDER_ANTHROPIC.equals(id)) return "Anthropic Messages API";
         if (PROVIDER_GEMINI.equals(id)) return "Google Gemini API";
@@ -163,6 +177,7 @@ public final class BotnaAICompiler {
         if (PROVIDER_GEMINI.equals(provider)) return requestGemini(endpoint, apiKey, model, userText, imageBase64);
         if (PROVIDER_OPENAI_RESPONSES.equals(provider)) return requestResponses(endpoint, apiKey, model, userText, imageBase64);
         if (PROVIDER_GITHUB_MODELS.equals(provider) || PROVIDER_OPENAI_COMPAT.equals(provider)
+                || PROVIDER_DEEPSEEK.equals(provider) || PROVIDER_OPENROUTER.equals(provider) || PROVIDER_GROQ.equals(provider)
                 || PROVIDER_CUSTOM.equals(provider) || PROVIDER_COPILOT_BRIDGE.equals(provider)) {
             return requestChatCompletions(provider, endpoint, apiKey, model, userText, imageBase64);
         }
@@ -239,6 +254,9 @@ public final class BotnaAICompiler {
         if (PROVIDER_GITHUB_MODELS.equals(provider)) {
             headers.put("Accept", "application/vnd.github+json");
             headers.put("X-GitHub-Api-Version", "2022-11-28");
+        } else if (PROVIDER_OPENROUTER.equals(provider)) {
+            headers.put("HTTP-Referer", "https://github.com/");
+            headers.put("X-OpenRouter-Title", "Botna Android Automation");
         }
         return headers;
     }
@@ -393,6 +411,9 @@ public final class BotnaAICompiler {
         switch (provider) {
             case PROVIDER_GITHUB_MODELS: return "https://models.github.ai/inference/chat/completions";
             case PROVIDER_OPENAI_COMPAT: return "https://api.deepseek.com/chat/completions";
+            case PROVIDER_DEEPSEEK: return "https://api.deepseek.com/chat/completions";
+            case PROVIDER_OPENROUTER: return "https://openrouter.ai/api/v1/chat/completions";
+            case PROVIDER_GROQ: return "https://api.groq.com/openai/v1/chat/completions";
             case PROVIDER_OPENAI_RESPONSES: return "https://api.openai.com/v1/responses";
             case PROVIDER_ANTHROPIC: return "https://api.anthropic.com/v1/messages";
             case PROVIDER_GEMINI: return "https://generativelanguage.googleapis.com/v1beta";
@@ -406,6 +427,9 @@ public final class BotnaAICompiler {
         switch (provider) {
             case PROVIDER_GITHUB_MODELS: return "openai/gpt-4.1-mini";
             case PROVIDER_OPENAI_COMPAT: return "deepseek-flash";
+            case PROVIDER_DEEPSEEK: return "deepseek-flash";
+            case PROVIDER_OPENROUTER: return "openai/gpt-4.1-mini";
+            case PROVIDER_GROQ: return "openai/gpt-oss-120b";
             case PROVIDER_OPENAI_RESPONSES: return "gpt-5.4-mini";
             case PROVIDER_ANTHROPIC: return "claude-sonnet-4-5";
             case PROVIDER_GEMINI: return "gemini-2.5-flash";
@@ -416,10 +440,13 @@ public final class BotnaAICompiler {
     }
 
     private static String normalizeProviderId(String value) {
-        if (value == null) return PROVIDER_GITHUB_MODELS;
+        if (value == null) return PROVIDER_GEMINI;
         switch (value) {
             case PROVIDER_GITHUB_MODELS:
             case PROVIDER_OPENAI_COMPAT:
+            case PROVIDER_DEEPSEEK:
+            case PROVIDER_OPENROUTER:
+            case PROVIDER_GROQ:
             case PROVIDER_OPENAI_RESPONSES:
             case PROVIDER_ANTHROPIC:
             case PROVIDER_GEMINI:
@@ -464,15 +491,18 @@ public final class BotnaAICompiler {
 
     /** Settings UI; API credentials are stored per profile and encrypted using Android Keystore. */
     public static void showSettingsDialog(Context context, boolean accessibilityOverlay, Runnable onSaved) {
-        final String[] ids = { PROVIDER_GITHUB_MODELS, PROVIDER_OPENAI_COMPAT, PROVIDER_OPENAI_RESPONSES,
-                PROVIDER_ANTHROPIC, PROVIDER_GEMINI, PROVIDER_CUSTOM, PROVIDER_COPILOT_BRIDGE };
+        final String[] ids = { PROVIDER_DEEPSEEK, PROVIDER_OPENROUTER, PROVIDER_GROQ,
+                PROVIDER_OPENAI_RESPONSES, PROVIDER_ANTHROPIC, PROVIDER_GEMINI,
+                PROVIDER_CUSTOM, PROVIDER_OPENAI_COMPAT, PROVIDER_COPILOT_BRIDGE };
         final String[] labels = {
-                "GitHub Models — حصة مجانية حسب الحدود",
-                "DeepSeek / OpenRouter / Groq / مزوّد متوافق",
+                "DeepSeek API — مستقل",
+                "OpenRouter API — مستقل",
+                "Groq API — مستقل",
                 "OpenAI Responses API",
                 "Anthropic Messages API",
                 "Google Gemini API",
                 "رابط مخصص متوافق مع Chat Completions",
+                "مزود متوافق قديم/مخصص",
                 "GitHub Copilot عبر جسر خارجي (ليس مفتاح API عاديًا)"
         };
         LinearLayout container = new LinearLayout(context);
@@ -480,7 +510,7 @@ public final class BotnaAICompiler {
         int pad = Math.round(14 * context.getResources().getDisplayMetrics().density);
         container.setPadding(pad, pad, pad, pad);
         TextView intro = new TextView(context);
-        intro.setText("اختر المزوّد والنموذج. تُحفظ إعدادات كل مزوّد ومفتاحه بشكل منفصل ومشفّر على هذا الجهاز. GitHub Models يوفر حصة استخدام محدودة لبعض النماذج، لكنه ليس خدمة Copilot نفسها.");
+        intro.setText("اختر مزودًا واحدًا مستقلًا؛ لكل مزود رابط ونموذج ومفتاح منفصل. زر «روابط» يعرض العناوين المعروفة، وزر «النماذج» يجلب المعرفات من API عند توفر اتصال ومفتاح صالح. أسماء النماذج وتوفرها يتغيران حسب حساب المزود.");
         intro.setTextColor(MUTED); intro.setTextSize(12); intro.setGravity(Gravity.RIGHT);
         container.addView(intro, new LinearLayout.LayoutParams(-1, -2));
 
@@ -496,14 +526,24 @@ public final class BotnaAICompiler {
 
         EditText endpoint = new EditText(context); endpoint.setSingleLine(true); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         endpoint.setHint("رابط API الكامل أو عنوان الجذر لـ Gemini"); styleInput(context, endpoint, pad);
-        LinearLayout.LayoutParams endpointLp = new LinearLayout.LayoutParams(-1, -2); endpointLp.topMargin = pad / 2; container.addView(endpoint, endpointLp);
+        Button endpointPicker = smallGlassButton(context, "روابط");
+        LinearLayout endpointRow = new LinearLayout(context); endpointRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams endpointFieldLp = new LinearLayout.LayoutParams(0, -2, 1f); endpointRow.addView(endpoint, endpointFieldLp);
+        LinearLayout.LayoutParams endpointButtonLp = new LinearLayout.LayoutParams(Math.round(76 * context.getResources().getDisplayMetrics().density), -2);
+        endpointButtonLp.leftMargin = Math.max(4, pad / 3); endpointRow.addView(endpointPicker, endpointButtonLp);
+        LinearLayout.LayoutParams endpointLp = new LinearLayout.LayoutParams(-1, -2); endpointLp.topMargin = pad / 2; container.addView(endpointRow, endpointLp);
 
         EditText model = new EditText(context); model.setSingleLine(true); model.setInputType(InputType.TYPE_CLASS_TEXT);
         model.setHint("اسم النموذج كما يقدمه المزوّد"); styleInput(context, model, pad);
-        LinearLayout.LayoutParams modelLp = new LinearLayout.LayoutParams(-1, -2); modelLp.topMargin = pad / 3; container.addView(model, modelLp);
+        Button modelPicker = smallGlassButton(context, "النماذج");
+        LinearLayout modelRow = new LinearLayout(context); modelRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams modelFieldLp = new LinearLayout.LayoutParams(0, -2, 1f); modelRow.addView(model, modelFieldLp);
+        LinearLayout.LayoutParams modelButtonLp = new LinearLayout.LayoutParams(Math.round(86 * context.getResources().getDisplayMetrics().density), -2);
+        modelButtonLp.leftMargin = Math.max(4, pad / 3); modelRow.addView(modelPicker, modelButtonLp);
+        LinearLayout.LayoutParams modelLp = new LinearLayout.LayoutParams(-1, -2); modelLp.topMargin = pad / 3; container.addView(modelRow, modelLp);
 
         EditText key = new EditText(context); key.setSingleLine(true); key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        key.setHint("مفتاح API أو GitHub token — اتركه فارغًا للاحتفاظ بالمحفوظ"); styleInput(context, key, pad);
+        key.setHint("مفتاح API لهذا المزوّد — اتركه فارغًا للاحتفاظ بالمحفوظ"); styleInput(context, key, pad);
         LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(-1, -2); keyLp.topMargin = pad / 3; container.addView(key, keyLp);
 
         TextView help = new TextView(context); help.setTextColor(MUTED); help.setTextSize(12); help.setGravity(Gravity.RIGHT);
@@ -538,8 +578,14 @@ public final class BotnaAICompiler {
             status.setText(BotnaKeyVault.hasKey(context, id) ? "✓ يوجد مفتاح محفوظ ومشفّر لهذا المزوّد." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.");
             if (PROVIDER_GITHUB_MODELS.equals(id)) {
                 help.setText("GitHub Models: أدخل GitHub token صالحًا واسم نموذج متاحًا لحسابك. الحصة المجانية وحدود النماذج تتغير حسب شروط GitHub.");
+            } else if (PROVIDER_DEEPSEEK.equals(id)) {
+                help.setText("DeepSeek: رابط Chat Completions مستقل. النموذج الافتراضي deepseek-flash؛ استخدم زر النماذج لمعرفة المعرفات المتاحة لحسابك.");
+            } else if (PROVIDER_OPENROUTER.equals(id)) {
+                help.setText("OpenRouter: كل النماذج تمر عبر هذا المزود، وقد تختلف الرؤية والسعر حسب النموذج. اختر نموذجًا يدعم الصور إذا أرفقت لقطة شاشة.");
+            } else if (PROVIDER_GROQ.equals(id)) {
+                help.setText("Groq API: استخدم مفتاح Groq ومعرف نموذج فعّال من القائمة المباشرة. ليست كل النماذج تدعم الصور.");
             } else if (PROVIDER_OPENAI_COMPAT.equals(id)) {
-                help.setText("مثال DeepSeek: https://api.deepseek.com/chat/completions — مثال OpenRouter: https://openrouter.ai/api/v1/chat/completions. راجع رابط المزوّد الحالي.");
+                help.setText("ملف متوافق قديم للحفاظ على الإعدادات السابقة. يفضّل اختيار DeepSeek أو OpenRouter أو Groq من الملفات المفصولة.");
             } else if (PROVIDER_CUSTOM.equals(id)) {
                 help.setText("أدخل رابط /chat/completions الكامل مع المفتاح ومعرّف النموذج. يدعم هذا غالبية واجهات OpenAI-compatible، وليس كل واجهات النماذج الخاصة.");
             } else if (PROVIDER_COPILOT_BRIDGE.equals(id)) {
@@ -562,6 +608,67 @@ public final class BotnaAICompiler {
         for (int i = 0; i < ids.length; i++) if (ids[i].equals(active)) activePosition = i;
         binding[0] = true; providerSpinner.setSelection(activePosition); currentIndex[0] = activePosition;
         loadCurrent[0].run(); binding[0] = false;
+
+        endpointPicker.setOnClickListener(v -> {
+            stashCurrent[0].run();
+            int index = providerSpinner.getSelectedItemPosition(); if (index < 0 || index >= ids.length) return;
+            String selectedProvider = ids[index];
+            String[] values = endpointSuggestions(selectedProvider);
+            String[] labelsForPicker = endpointSuggestionLabels(selectedProvider);
+            AlertDialog picker = new AlertDialog.Builder(context).setTitle("روابط API المقترحة — " + providerLabel(selectedProvider))
+                    .setItems(labelsForPicker, (d, which) -> {
+                        if (which < 0 || which >= values.length) return;
+                        endpoint.setText(values[which]);
+                        drafts.put(selectedProvider, new String[]{values[which], model.getText().toString(), key.getText().toString()});
+                        status.setText("تم اختيار الرابط. اضغط حفظ الإعدادات لاعتماده.");
+                    }).setNegativeButton("إغلاق", null).create();
+            try { if (picker.getWindow() != null && accessibilityOverlay) picker.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); picker.show(); }
+            catch (Exception ex) { status.setText("تعذر عرض روابط API."); }
+        });
+
+        modelPicker.setOnClickListener(v -> {
+            stashCurrent[0].run();
+            int index = providerSpinner.getSelectedItemPosition(); if (index < 0 || index >= ids.length) return;
+            String selectedProvider = ids[index];
+            String[] data = drafts.get(selectedProvider);
+            if (data == null) data = new String[]{endpoint.getText().toString(), model.getText().toString(), key.getText().toString()};
+            final String selectedEndpoint = data[0] == null ? "" : data[0].trim();
+            String typedKey = data[2] == null ? "" : data[2].trim();
+            final String selectedKey = typedKey.isEmpty() ? BotnaKeyVault.load(context, selectedProvider) : typedKey;
+            if (selectedEndpoint.isEmpty() || selectedKey.isEmpty()) {
+                status.setText("أدخل رابط API ومفتاح هذا المزود قبل جلب النماذج."); return;
+            }
+            modelPicker.setEnabled(false); status.setText("جارٍ جلب نماذج " + providerLabel(selectedProvider) + " من API…");
+            final String requestedProvider = selectedProvider;
+            new Thread(() -> {
+                List<ModelOption> found = new ArrayList<>(); String error = null;
+                try { found = fetchModels(requestedProvider, selectedEndpoint, selectedKey); }
+                catch (Exception ex) { error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage(); }
+                final List<ModelOption> modelsFound = found; final String fetchError = error;
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    modelPicker.setEnabled(true);
+                    if (providerSpinner.getSelectedItemPosition() >= 0 && !requestedProvider.equals(ids[providerSpinner.getSelectedItemPosition()])) {
+                        status.setText("تم إنهاء طلب النماذج للمزود السابق؛ اختره مرة أخرى لعرض النتيجة."); return;
+                    }
+                    if (fetchError != null || modelsFound.isEmpty()) {
+                        status.setText("تعذر جلب النماذج: " + (fetchError == null ? "لم يرجع API قائمة نماذج." : fetchError)); return;
+                    }
+                    int count = Math.min(modelsFound.size(), 80);
+                    String[] display = new String[count];
+                    for (int i = 0; i < count; i++) display[i] = modelsFound.get(i).label;
+                    AlertDialog modelsDialog = new AlertDialog.Builder(context).setTitle("النماذج المتاحة — " + providerLabel(requestedProvider))
+                            .setItems(display, (d, which) -> {
+                                if (which < 0 || which >= count) return;
+                                String chosen = modelsFound.get(which).id;
+                                model.setText(chosen);
+                                drafts.put(requestedProvider, new String[]{endpoint.getText().toString(), chosen, key.getText().toString()});
+                                status.setText("اخترت النموذج " + chosen + ". اضغط حفظ الإعدادات للاعتماد.");
+                            }).setNegativeButton("إغلاق", null).create();
+                    try { if (modelsDialog.getWindow() != null && accessibilityOverlay) modelsDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); modelsDialog.show(); }
+                    catch (Exception ex) { status.setText("تعذر عرض قائمة النماذج."); }
+                });
+            }, "Botna-Model-Fetch").start();
+        });
 
         testConnectionButton.setOnClickListener(v -> {
             stashCurrent[0].run();
@@ -637,6 +744,113 @@ public final class BotnaAICompiler {
                 catch (Exception e) { Toast.makeText(context, "تعذر فتح تأكيد المسح.", Toast.LENGTH_LONG).show(); }
             });
         } catch (Exception e) { Toast.makeText(context, "تعذر فتح إعدادات الذكاء الاصطناعي.", Toast.LENGTH_LONG).show(); }
+    }
+
+    private static final class ModelOption {
+        final String id; final String label; final boolean vision; final boolean recommended;
+        ModelOption(String id, String label, boolean vision, boolean recommended) { this.id = id; this.label = label; this.vision = vision; this.recommended = recommended; }
+    }
+
+    private static Button smallGlassButton(Context context, String label) {
+        Button button = new Button(context);
+        button.setText(label); button.setAllCaps(false); button.setTextSize(10);
+        button.setTextColor(TEXT);
+        button.setPadding(2, 0, 2, 0);
+        button.setBackground(shape(context, Color.argb(205, 13, 28, 42), CYAN));
+        return button;
+    }
+
+    private static String[] endpointSuggestions(String provider) {
+        if (PROVIDER_DEEPSEEK.equals(provider)) return new String[]{"https://api.deepseek.com/chat/completions", "https://api.deepseek.com/v1/chat/completions"};
+        if (PROVIDER_OPENROUTER.equals(provider)) return new String[]{"https://openrouter.ai/api/v1/chat/completions"};
+        if (PROVIDER_GROQ.equals(provider)) return new String[]{"https://api.groq.com/openai/v1/chat/completions"};
+        if (PROVIDER_OPENAI_RESPONSES.equals(provider)) return new String[]{"https://api.openai.com/v1/responses"};
+        if (PROVIDER_ANTHROPIC.equals(provider)) return new String[]{"https://api.anthropic.com/v1/messages"};
+        if (PROVIDER_GEMINI.equals(provider)) return new String[]{"https://generativelanguage.googleapis.com/v1beta"};
+        if (PROVIDER_GITHUB_MODELS.equals(provider)) return new String[]{"https://models.github.ai/inference/chat/completions"};
+        if (PROVIDER_COPILOT_BRIDGE.equals(provider)) return new String[]{""};
+        if (PROVIDER_OPENAI_COMPAT.equals(provider)) return new String[]{"https://api.deepseek.com/chat/completions"};
+        return new String[]{"https://provider.example/v1/chat/completions"};
+    }
+
+    private static String[] endpointSuggestionLabels(String provider) {
+        String[] values = endpointSuggestions(provider); String[] labels = new String[values.length];
+        for (int i = 0; i < values.length; i++) labels[i] = (i == 0 ? "★ موصى به — " : "بديل متوافق — ") + (values[i].isEmpty() ? "أدخل رابط الجسر يدويًا" : values[i]);
+        return labels;
+    }
+
+    private static List<ModelOption> fetchModels(String provider, String endpoint, String key) throws Exception {
+        String id = normalizeProviderId(provider);
+        String url = modelsEndpoint(id, endpoint);
+        if (PROVIDER_GEMINI.equals(id)) url += (url.contains("?") ? "&" : "?") + "key=" + URLEncoder.encode(key, "UTF-8");
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setRequestMethod("GET"); connection.setConnectTimeout(15000); connection.setReadTimeout(25000);
+            connection.setRequestProperty("Accept", "application/json");
+            if (!PROVIDER_GEMINI.equals(id) && !key.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + key);
+            if (PROVIDER_ANTHROPIC.equals(id)) { connection.setRequestProperty("x-api-key", key); connection.setRequestProperty("anthropic-version", "2023-06-01"); }
+            if (PROVIDER_GITHUB_MODELS.equals(id)) { connection.setRequestProperty("Accept", "application/vnd.github+json"); connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28"); }
+            if (PROVIDER_OPENROUTER.equals(id)) { connection.setRequestProperty("HTTP-Referer", "https://github.com/"); connection.setRequestProperty("X-OpenRouter-Title", "Botna Android Automation"); }
+            int code = connection.getResponseCode();
+            InputStream body = code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream();
+            String raw = readAll(body);
+            if (code < 200 || code >= 300) throw new IllegalStateException("HTTP " + code + ": " + trimForMessage(raw));
+            JSONObject json = new JSONObject(raw);
+            JSONArray data = json.optJSONArray("data");
+            if (data == null) data = json.optJSONArray("models");
+            if (data == null) throw new IllegalStateException("استجابة API لا تحتوي على data أو models. تحقق من رابط جلب النماذج.");
+            String defaultId = defaultModel(id);
+            List<ModelOption> found = new ArrayList<>();
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject item = data.optJSONObject(i); if (item == null) continue;
+                String modelId = item.optString("id", item.optString("name", "")).trim();
+                if (modelId.startsWith("models/")) modelId = modelId.substring("models/".length());
+                if (modelId.isEmpty()) continue;
+                if (item.has("active") && !item.optBoolean("active", true)) continue;
+                JSONArray methods = item.optJSONArray("supported_generation_methods");
+                if (methods != null) {
+                    boolean usable = false; for (int j = 0; j < methods.length(); j++) if ("generateContent".equalsIgnoreCase(methods.optString(j))) usable = true;
+                    if (!usable) continue;
+                }
+                boolean vision = supportsImage(item);
+                boolean recommended = modelId.equals(defaultId) || vision;
+                String label = modelId + (modelId.equals(defaultId) ? "  ★ الافتراضي" : vision ? "  ✓ يدعم الصور" : "");
+                found.add(new ModelOption(modelId, label, vision, recommended));
+            }
+            Collections.sort(found, new Comparator<ModelOption>() {
+                @Override public int compare(ModelOption a, ModelOption b) {
+                    if (a.id.equals(defaultId) && !b.id.equals(defaultId)) return -1;
+                    if (!a.id.equals(defaultId) && b.id.equals(defaultId)) return 1;
+                    if (a.vision != b.vision) return a.vision ? -1 : 1;
+                    return a.id.compareToIgnoreCase(b.id);
+                }
+            });
+            if (found.size() > 200) return new ArrayList<>(found.subList(0, 200));
+            return found;
+        } finally { if (connection != null) connection.disconnect(); }
+    }
+
+    private static boolean supportsImage(JSONObject item) {
+        JSONObject architecture = item.optJSONObject("architecture");
+        JSONArray modalities = architecture == null ? item.optJSONArray("input_modalities") : architecture.optJSONArray("input_modalities");
+        if (modalities == null) return false;
+        for (int i = 0; i < modalities.length(); i++) if ("image".equalsIgnoreCase(modalities.optString(i))) return true;
+        return false;
+    }
+
+    private static String modelsEndpoint(String provider, String endpoint) {
+        String value = trimTrailingSlash(endpoint);
+        if (PROVIDER_GEMINI.equals(provider)) return value + "/models";
+        String[] suffixes = {"/chat/completions", "/inference/chat/completions", "/responses", "/messages", "/completions"};
+        for (String suffix : suffixes) if (value.endsWith(suffix)) return value.substring(0, value.length() - suffix.length()) + "/models";
+        if (value.endsWith("/v1")) return value + "/models";
+        return value + "/models";
+    }
+
+    private static String trimForMessage(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        return value.length() > 240 ? value.substring(0, 240) : value;
     }
 
     private static String savedOrDefault(Context context, String key, String fallback) {
