@@ -41,6 +41,7 @@ public class MainActivity extends Activity {
     private TextView serviceStatus;
     private TextView lastResult;
     private TextView dataSummary;
+    private TextView savedScriptsSummary;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -126,6 +127,16 @@ public class MainActivity extends Activity {
         savedAgentTasksButton.setOnClickListener(v -> showSavedAgentTasksDialog());
         agentMessagesButton.setOnClickListener(v -> showAgentMessagesDialog());
 
+        // Dedicated script-library card separated from agent tasks and diagnostics.
+        LinearLayout scriptsCard = card();
+        LinearLayout.LayoutParams scriptsCardLp = matchWrap(); scriptsCardLp.topMargin = dp(16); page.addView(scriptsCard, scriptsCardLp);
+        scriptsCard.addView(text("السكربتات المحفوظة", 19, TEXT, true), matchWrap());
+        savedScriptsSummary = text("عدد السكربتات: " + BotnaStore.scripts(this).length() + "\nيمكنك إنشاء سكربت مستقل، تعديل بلوكاته، إعادة تسميته، تشغيله أو حذفه.", 13, MUTED, false);
+        LinearLayout.LayoutParams scriptsSummaryLp = matchWrap(); scriptsSummaryLp.topMargin = dp(5); scriptsCard.addView(savedScriptsSummary, scriptsSummaryLp);
+        Button savedScriptsButton = button("فتح قائمة السكربتات المحفوظة");
+        LinearLayout.LayoutParams savedScriptsLp = matchWrap(); savedScriptsLp.topMargin = dp(9); scriptsCard.addView(savedScriptsButton, savedScriptsLp);
+        savedScriptsButton.setOnClickListener(v -> showSavedScriptsDialog());
+
         LinearLayout dataCard = card();
         LinearLayout.LayoutParams dataLp = matchWrap(); dataLp.topMargin = dp(16); page.addView(dataCard, dataLp);
         dataCard.addView(text("بياناتك المحلية", 18, TEXT, true));
@@ -158,7 +169,7 @@ public class MainActivity extends Activity {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(6), dp(4), dp(6), dp(4));
-        TextView help = text("اكتب الهدف النهائي كما تريده. سيحلل الوكيل لقطة الشاشة بعد كل إجراء، ثم يقرر الخطوة التالية بناءً على النتيجة. يحتاج إلى خدمة إمكانية الوصول ومزوّد API يدعم الصور. الحد الوقائي 40 إجراءً لكل مهمة.", 13, MUTED, false);
+        TextView help = text("اكتب الهدف النهائي أو السؤال كما تريده، وليس شرطًا أن يكون أمرًا مباشرًا: مثل «اختبر سرعة الإنترنت وأخبرني بالنتيجة» أو «افتح الرابط ولخّص محتواه». سيحلل الوكيل لقطة الشاشة بعد كل إجراء، ثم يحفظ الخلاصة والنصوص التي ظهرت في رسائل الوكيل والسجلات. يحتاج إلى خدمة إمكانية الوصول ومزوّد API يدعم الصور. الحد الوقائي 40 إجراءً لكل مهمة.", 13, MUTED, false);
         content.addView(help, matchWrap());
         EditText task = new EditText(this);
         task.setSingleLine(false); task.setMinLines(5); task.setMaxLines(10);
@@ -198,8 +209,8 @@ public class MainActivity extends Activity {
             String command = task.getText() == null ? "" : task.getText().toString().trim();
             if (command.isEmpty()) { task.setError("اكتب وصف المهمة أولًا."); return; }
             if (!confirmation.isChecked()) { Toast.makeText(this, "أكد فهمك لاستخدام لقطات الشاشة والتحكم بالواجهة أولًا.", Toast.LENGTH_LONG).show(); return; }
-            if (!BotnaAICompiler.isConfigured(this)) {
-                Toast.makeText(this, "اضبط مزود API ومفتاحًا واحدًا على الأقل قبل بدء الوكيل الذكي.", Toast.LENGTH_LONG).show(); return;
+            if (!BotnaAICompiler.isConfigured(this) && !BotnaAccessibilityService.isLocalSpeedTestRequest(command)) {
+                Toast.makeText(this, "اضبط مزود API ومفتاحًا واحدًا على الأقل قبل بدء الوكيل الذكي. اختبار سرعة التنزيل المحلي لا يحتاج مفتاحًا.", Toast.LENGTH_LONG).show(); return;
             }
             String taskId = BotnaAgentStore.createTask(this, command);
             dialog.dismiss();
@@ -208,8 +219,8 @@ public class MainActivity extends Activity {
     }
 
     private void dispatchAgentTask(String taskId, String goal) {
-        if (!BotnaAICompiler.isConfigured(this)) {
-            Toast.makeText(this, "اضبط مزود API ومفتاحًا صالحًا قبل تشغيل الوكيل.", Toast.LENGTH_LONG).show();
+        if (!BotnaAICompiler.isConfigured(this) && !BotnaAccessibilityService.isLocalSpeedTestRequest(goal)) {
+            Toast.makeText(this, "اضبط مزود API ومفتاحًا صالحًا قبل تشغيل الوكيل. اختبار سرعة التنزيل المحلي لا يحتاج مفتاحًا.", Toast.LENGTH_LONG).show();
             return;
         }
         if (taskId == null || taskId.trim().isEmpty()) taskId = BotnaAgentStore.createTask(this, goal);
@@ -226,6 +237,94 @@ public class MainActivity extends Activity {
                 .putExtra("task", goal).putExtra("agentTaskId", taskId);
         sendBroadcast(start);
         Toast.makeText(this, "أُرسلت المهمة إلى الوكيل. ستُحفظ خطواته ورسائله ويمكن مراجعتها لاحقًا.", Toast.LENGTH_LONG).show();
+    }
+
+    private void showSavedScriptsDialog() {
+        org.json.JSONArray scripts = BotnaStore.scripts(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(8), dp(5), dp(8), dp(5));
+        root.addView(text("كل سكربت محفوظ مستقل عن مهام الوكيل. يمكنك إعادة تسميته، تعديل خطواته أو إضافة خطوات من محرر Botna، تشغيله أو حذفه.", 12, MUTED, false), matchWrap());
+        Button create = button("＋ إنشاء سكربت جديد");
+        LinearLayout.LayoutParams createLp = matchWrap(); createLp.topMargin = dp(7); root.addView(create, createLp);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, dp(430)); scrollLp.topMargin = dp(8); root.addView(scroll, scrollLp);
+        final AlertDialog[] owner = new AlertDialog[1];
+        create.setOnClickListener(v -> {
+            EditText name = new EditText(this); name.setSingleLine(true); name.setTextColor(TEXT); name.setHintTextColor(MUTED);
+            name.setHint("اسم السكربت"); name.setText("سكربت جديد"); name.setSelectAllOnFocus(true);
+            AlertDialog createDialog = new AlertDialog.Builder(this).setTitle("إنشاء سكربت محفوظ")
+                    .setView(name).setPositiveButton("إنشاء", (d, w) -> {
+                        org.json.JSONObject created = BotnaStore.createScript(this, name.getText() == null ? "سكربت جديد" : name.getText().toString());
+                        if (owner[0] != null) owner[0].dismiss(); refreshStatus();
+                        if (created != null) dispatchSavedScript(created.optString("id", ""), false);
+                        else showSavedScriptsDialog();
+                    }).setNegativeButton("إلغاء", null).create();
+            createDialog.show();
+            if (createDialog.getWindow() != null) createDialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        });
+        if (scripts.length() == 0) list.addView(text("لا توجد سكربتات محفوظة. أنشئ سكربتًا جديدًا ثم أضف خطواته من محرر Botna.", 13, MUTED, false), matchWrap());
+        for (int i = 0; i < scripts.length(); i++) {
+            org.json.JSONObject script = scripts.optJSONObject(i); if (script == null) continue;
+            final String id = script.optString("id", "");
+            String name = script.optString("name", "سكربت بدون اسم");
+            int count = BotnaStore.steps(script).length();
+            LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(8), dp(7), dp(8), dp(7));
+            card.setBackground(roundDrawable(CARD, CYAN, 1, 12));
+            LinearLayout.LayoutParams cardLp = matchWrap(); cardLp.topMargin = dp(7); list.addView(card, cardLp);
+            card.addView(text(name, 15, TEXT, true), matchWrap());
+            LinearLayout.LayoutParams detailLp = matchWrap(); detailLp.topMargin = dp(3);
+            card.addView(text("الخطوات: " + count + (id.equals(BotnaStore.activeId(this)) ? " • السكربت النشط" : ""), 11, MUTED, false), detailLp);
+            LinearLayout row1 = new LinearLayout(this); row1.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams row1Lp = matchWrap(); row1Lp.topMargin = dp(6); card.addView(row1, row1Lp);
+            Button edit = button("إضافة/تعديل الخطوات"); Button run = button("▶ تشغيل");
+            row1.addView(edit, new LinearLayout.LayoutParams(0, dp(40), 1));
+            LinearLayout.LayoutParams runLp = new LinearLayout.LayoutParams(0, dp(40), 1); runLp.leftMargin = dp(4); row1.addView(run, runLp);
+            LinearLayout row2 = new LinearLayout(this); row2.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams row2Lp = matchWrap(); row2Lp.topMargin = dp(4); card.addView(row2, row2Lp);
+            Button rename = button("إعادة تسمية"); Button delete = button("حذف السكربت");
+            row2.addView(rename, new LinearLayout.LayoutParams(0, dp(38), 1));
+            LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(0, dp(38), 1); delLp.leftMargin = dp(4); row2.addView(delete, delLp);
+            edit.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); dispatchSavedScript(id, false); });
+            run.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); dispatchSavedScript(id, true); });
+            rename.setOnClickListener(v -> {
+                EditText input = new EditText(this); input.setSingleLine(true); input.setTextColor(TEXT); input.setHintTextColor(MUTED);
+                input.setText(name); input.setSelectAllOnFocus(true);
+                AlertDialog renameDialog = new AlertDialog.Builder(this).setTitle("إعادة تسمية السكربت")
+                        .setView(input).setPositiveButton("حفظ الاسم", (d, w) -> {
+                            String newName = input.getText() == null ? "" : input.getText().toString().trim();
+                            if (!BotnaStore.renameScript(this, id, newName)) Toast.makeText(this, "اكتب اسمًا غير فارغ ثم أعد المحاولة.", Toast.LENGTH_LONG).show();
+                            if (owner[0] != null) owner[0].dismiss(); refreshStatus(); showSavedScriptsDialog();
+                        }).setNegativeButton("إلغاء", null).create();
+                renameDialog.show(); if (renameDialog.getWindow() != null) renameDialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            });
+            delete.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("حذف السكربت بالكامل")
+                    .setMessage("سيُحذف «" + name + "» وجميع خطواته المحفوظة. لا يمكن التراجع عن ذلك.")
+                    .setPositiveButton("حذف", (d, w) -> { BotnaStore.deleteScript(this, id); if (owner[0] != null) owner[0].dismiss(); refreshStatus(); showSavedScriptsDialog(); })
+                    .setNegativeButton("إلغاء", null).show());
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("السكربتات المحفوظة")
+                .setView(root).setPositiveButton("إغلاق", null).create();
+        dialog.show(); owner[0] = dialog;
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(560)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(48), Math.round(getResources().getDisplayMetrics().heightPixels * 0.78f)));
+        }
+    }
+
+    private void dispatchSavedScript(String scriptId, boolean runNow) {
+        org.json.JSONObject script = BotnaStore.getScript(this, scriptId);
+        if (script == null) { Toast.makeText(this, "لم يتم العثور على السكربت المحفوظ.", Toast.LENGTH_LONG).show(); return; }
+        if (!isServiceEnabled()) {
+            Toast.makeText(this, "فعّل خدمة Botna قبل تحرير أو تشغيل السكربت.", Toast.LENGTH_LONG).show(); openAccessibilitySettings(); return;
+        }
+        String action = runNow ? BotnaAccessibilityService.ACTION_RUN_AGENT_SCRIPT : BotnaAccessibilityService.ACTION_OPEN_AGENT_SCRIPT;
+        Intent command = new Intent(action).setPackage(getPackageName()).putExtra("scriptId", scriptId);
+        sendBroadcast(command);
+        Toast.makeText(this, runNow ? "تم إرسال السكربت للتشغيل." : "افتح محرر Botna لإضافة الخطوات أو تعديلها.", Toast.LENGTH_SHORT).show();
     }
 
     private void showSavedAgentTasksDialog() {
@@ -504,6 +603,10 @@ public class MainActivity extends Activity {
                         : Color.rgb(255, 190, 100)
         );
 
+        if (savedScriptsSummary != null) {
+            savedScriptsSummary.setText("عدد السكربتات: " + BotnaStore.scripts(this).length()
+                    + "\nيمكنك إنشاء سكربت مستقل، تعديل بلوكاته، إعادة تسميته، تشغيله أو حذفه.");
+        }
         if (dataSummary != null) {
             dataSummary.setText("السكربتات المحفوظة: " + BotnaStore.scripts(this).length()
                     + "\nقوالب مكتبة الصور: " + BotnaStore.imageLibrary(this).length()
