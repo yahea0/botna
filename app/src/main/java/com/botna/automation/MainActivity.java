@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -17,6 +18,9 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -103,6 +107,15 @@ public class MainActivity extends Activity {
         commandGuide.setOnClickListener(v -> showCommandGuide());
         refresh.setOnClickListener(v -> refreshStatus());
 
+        LinearLayout agentRow = new LinearLayout(this); agentRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams agentRowLp = matchWrap(); agentRowLp.topMargin = dp(8); dashboard.addView(agentRow, agentRowLp);
+        Button logsButton = button("قائمة السجلات");
+        Button smartTaskButton = button("إنشاء بوت ذكي للمهام المعقدة");
+        agentRow.addView(logsButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams smartLp = new LinearLayout.LayoutParams(0, dp(48), 1); smartLp.leftMargin = dp(7); agentRow.addView(smartTaskButton, smartLp);
+        logsButton.setOnClickListener(v -> showLogsDialog());
+        smartTaskButton.setOnClickListener(v -> showSmartTaskDialog());
+
         LinearLayout dataCard = card();
         LinearLayout.LayoutParams dataLp = matchWrap(); dataLp.topMargin = dp(16); page.addView(dataCard, dataLp);
         dataCard.addView(text("بياناتك المحلية", 18, TEXT, true));
@@ -125,6 +138,109 @@ public class MainActivity extends Activity {
         TextView disclaimer = text("ملاحظة: تفعيل خدمة إمكانية الوصول يتم يدويًا من إعدادات أندرويد. قبل تشغيل أي أمر مولّد بالذكاء الاصطناعي راجع معاينة الخطوات؛ لن يُسمح للمترجم بتنفيذ كود عشوائي خارج أنواع الأوامر المدعومة.", 12, MUTED, false);
         LinearLayout.LayoutParams disclaimerLp = matchWrap(); disclaimerLp.topMargin = dp(20); page.addView(disclaimer, disclaimerLp);
         setContentView(scroll);
+    }
+
+    private void showSmartTaskDialog() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(6), dp(4), dp(6), dp(4));
+        TextView help = text("اكتب الهدف النهائي كما تريده. سيحلل الوكيل لقطة الشاشة بعد كل إجراء، ثم يقرر الخطوة التالية بناءً على النتيجة. يحتاج إلى خدمة إمكانية الوصول ومزوّد API يدعم الصور. الحد الوقائي 40 إجراءً لكل مهمة.", 13, MUTED, false);
+        content.addView(help, matchWrap());
+        EditText task = new EditText(this);
+        task.setSingleLine(false); task.setMinLines(5); task.setMaxLines(10);
+        task.setGravity(Gravity.TOP | Gravity.START); task.setTextSize(15); task.setTextColor(TEXT); task.setHintTextColor(MUTED);
+        task.setHint("مثال: افتح التطبيق، ابحث عن العنصر المطلوب، افتحه ثم تحقق من النتيجة...");
+        task.setPadding(dp(12), dp(10), dp(12), dp(10)); task.setBackground(roundDrawable(CARD, CYAN, 1, 14));
+        LinearLayout.LayoutParams taskLp = matchWrap(); taskLp.topMargin = dp(10); content.addView(task, taskLp);
+        CheckBox confirmation = new CheckBox(this);
+        confirmation.setText("أفهم أن الوكيل سيرى لقطات الشاشة ويتحكم بالواجهة وفق المهمة، وسأراجع العمليات الحساسة بنفسي.");
+        confirmation.setTextColor(MUTED); confirmation.setTextSize(12); confirmation.setChecked(false);
+        LinearLayout.LayoutParams confirmLp = matchWrap(); confirmLp.topMargin = dp(8); content.addView(confirmation, confirmLp);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("إنشاء بوت ذكي للمهام الصعبة والطويلة")
+                .setView(content).setPositiveButton("بدء المهمة", null).setNegativeButton("إلغاء", null).create();
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String command = task.getText() == null ? "" : task.getText().toString().trim();
+            if (command.isEmpty()) { task.setError("اكتب وصف المهمة أولًا."); return; }
+            if (!confirmation.isChecked()) { Toast.makeText(this, "أكد فهمك لاستخدام لقطات الشاشة والتحكم بالواجهة أولًا.", Toast.LENGTH_LONG).show(); return; }
+            if (!BotnaAICompiler.isConfigured(this)) {
+                Toast.makeText(this, "اضبط مزود API ومفتاحًا واحدًا على الأقل قبل بدء الوكيل الذكي.", Toast.LENGTH_LONG).show(); return;
+            }
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, command).apply();
+            Intent start = new Intent(BotnaAccessibilityService.ACTION_START_SMART_TASK).setPackage(getPackageName()).putExtra("task", command);
+            sendBroadcast(start);
+            dialog.dismiss();
+            if (!isServiceEnabled()) {
+                Toast.makeText(this, "حُفظت المهمة. فعّل خدمة Botna من إعدادات إمكانية الوصول، ثم افتح التطبيق مجددًا لبدئها.", Toast.LENGTH_LONG).show();
+                openAccessibilitySettings();
+            } else {
+                Toast.makeText(this, "أُرسلت المهمة إلى بوتنا. سيُراجع الشاشة بعد كل إجراء؛ أوقفها من لوحة بوتنا عند الحاجة.", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void showLogsDialog() {
+        org.json.JSONArray logs = BotnaLogStore.list(this);
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(8), dp(4), dp(8), dp(4));
+        TextView summary = text("عدد السجلات المحفوظة: " + logs.length() + " (الحد الأقصى 100). تُحفظ التفاصيل ولقطات التشخيص داخل مساحة التطبيق الخاصة.", 12, MUTED, false);
+        content.addView(summary, matchWrap());
+        Button captureToggle = button(BotnaLogStore.screenshotsEnabled(this) ? "لقطات الشاشة مع السجلات: مفعّلة" : "لقطات الشاشة مع السجلات: متوقفة");
+        LinearLayout.LayoutParams toggleLp = matchWrap(); toggleLp.topMargin = dp(6); content.addView(captureToggle, toggleLp);
+        final AlertDialog[] logsDialogRef = new AlertDialog[1];
+        captureToggle.setOnClickListener(v -> {
+            BotnaLogStore.setScreenshotsEnabled(this, !BotnaLogStore.screenshotsEnabled(this));
+            if (logsDialogRef[0] != null) logsDialogRef[0].dismiss();
+            showLogsDialog();
+        });
+        ScrollView listScroll = new ScrollView(this); LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); listScroll.addView(list);
+        LinearLayout.LayoutParams listLp = new LinearLayout.LayoutParams(-1, dp(390)); listLp.topMargin = dp(8); content.addView(listScroll, listLp);
+        if (logs.length() == 0) {
+            TextView empty = text("لا توجد سجلات حتى الآن. عند فشل ترجمة أو خطوة ستظهر هنا تفاصيل السبب ولقطة الشاشة إذا كانت مفعّلة.", 13, MUTED, false); list.addView(empty, matchWrap());
+        }
+        for (int i = 0; i < logs.length(); i++) {
+            org.json.JSONObject item = logs.optJSONObject(i); if (item == null) continue;
+            String title = item.optString("timeText", "وقت غير معروف") + "\n" + item.optString("message", "فشل غير محدد");
+            Button row = button(title); row.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL); row.setTextSize(12);
+            LinearLayout.LayoutParams rowLp = matchWrap(); rowLp.topMargin = dp(5); list.addView(row, rowLp);
+            row.setOnClickListener(v -> showLogDetails(item));
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("سجلات بوتنا التشخيصية")
+                .setView(content).setPositiveButton("إغلاق", null).setNegativeButton("حذف جميع السجلات", null).create();
+        dialog.show();
+        logsDialogRef[0] = dialog;
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("حذف السجلات")
+                .setMessage("سيُحذف سجل الأخطاء وكل لقطات التشخيص المرتبطة به من مساحة التطبيق. لا يؤثر ذلك على السكربتات أو مفاتيح API.")
+                .setPositiveButton("حذف الكل", (d, w) -> { BotnaLogStore.clear(this); dialog.dismiss(); refreshStatus(); showLogsDialog(); })
+                .setNegativeButton("إلغاء", null).show());
+    }
+
+    private void showLogDetails(org.json.JSONObject entry) {
+        if (entry == null) return;
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(8), dp(6), dp(8), dp(6));
+        String details = "الوقت: " + entry.optString("timeText", "-")
+                + "\nالمصدر: " + entry.optString("source", "-")
+                + "\nالخطوة: " + (entry.optInt("stepIndex", -1) >= 0 ? (entry.optInt("stepIndex") + 1) : "غير محددة")
+                + "\nاسم الخطوة: " + entry.optString("stepLabel", "-")
+                + "\nالنتيجة: " + entry.optString("message", "-")
+                + "\n\nالسبب والتفاصيل:\n" + entry.optString("detail", "لا توجد تفاصيل إضافية.");
+        TextView text = text(details, 13, TEXT, false); content.addView(text, matchWrap());
+        Bitmap screenshot = BotnaLogStore.loadScreenshot(this, entry);
+        if (screenshot != null) {
+            ImageView image = new ImageView(this); image.setImageBitmap(screenshot); image.setAdjustViewBounds(true); image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            LinearLayout.LayoutParams imageLp = matchWrap(); imageLp.topMargin = dp(10); imageLp.height = dp(260); content.addView(image, imageLp);
+        } else {
+            TextView noImage = text("لا توجد لقطة شاشة محفوظة لهذا السجل. قد تكون اللقطات متوقفة أو لم يسمح أندرويد بالتقاطها.", 11, MUTED, false);
+            LinearLayout.LayoutParams noImageLp = matchWrap(); noImageLp.topMargin = dp(8); content.addView(noImage, noImageLp);
+        }
+        AlertDialog detailDialog = new AlertDialog.Builder(this).setTitle("تفاصيل سجل الفشل").setView(content)
+                .setPositiveButton("إغلاق", null).setNegativeButton("حذف هذا السجل", null).create();
+        detailDialog.setOnDismissListener(d -> { if (screenshot != null && !screenshot.isRecycled()) screenshot.recycle(); });
+        detailDialog.show();
+        detailDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("حذف هذا السجل؟").setMessage("سيتم حذف تفاصيله ولقطة الشاشة المرتبطة به.")
+                .setPositiveButton("حذف", (d, w) -> { BotnaLogStore.delete(this, entry.optString("id", "")); detailDialog.dismiss(); refreshStatus(); showLogsDialog(); })
+                .setNegativeButton("إلغاء", null).show());
     }
 
     private void openAccessibilitySettings() {
@@ -185,6 +301,8 @@ public class MainActivity extends Activity {
             dataSummary.setText("السكربتات المحفوظة: " + BotnaStore.scripts(this).length()
                     + "\nقوالب مكتبة الصور: " + BotnaStore.imageLibrary(this).length()
                     + "\nالمزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this))
+                    + "\nالمفاتيح المحفوظة لهذا المزوّد: " + BotnaKeyVault.count(this, BotnaAICompiler.providerId(this))
+                    + "\nالسجلات التشخيصية: " + BotnaLogStore.list(this).length()
                     + "\nحالة الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "إعداد API مكتمل" : "يتطلب إعداد مفتاح/نقطة اتصال API"));
         }
 
