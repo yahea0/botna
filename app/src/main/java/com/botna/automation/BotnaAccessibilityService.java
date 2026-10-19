@@ -175,6 +175,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private boolean customTestMode;
     private TextView resultLabel;
     private LinearLayout stepList;
+    // Search catalogue is rebuilt with the panel so each result always invokes the current command action.
+    private final List<CommandEntry> commandCatalog = new ArrayList<>();
     private int lastActionResult = 0;
     private int panelRestoreY;
     private String panelScriptId = "";
@@ -373,6 +375,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void showPanel() {
         if (wm == null || panelVisible || running || singleStepTesting) return;
+        commandCatalog.clear();
 
         // A fixed top header plus one full-content ScrollView keeps controls
         // near the top and makes every section reachable on short screens.
@@ -410,12 +413,19 @@ public class BotnaAccessibilityService extends AccessibilityService {
         Button fixedPause = button("Ⅱ إيقاف/استكمال", false);
         Button fixedStop = button("■ إيقاف", false);
         fixedRunRow.addView(fixedRun, new LinearLayout.LayoutParams(0, dp(38), 1));
-        LinearLayout.LayoutParams fixedPauseLp = new LinearLayout.LayoutParams(0, dp(38), 1); fixedPauseLp.setMargins(dp(4), 0, dp(4), 0); fixedRunRow.addView(fixedPause, fixedPauseLp);
+        LinearLayout.LayoutParams fixedPauseLp = new LinearLayout.LayoutParams(0, dp(38), 1); fixedPauseLp.setMargins(dp(3), 0, dp(3), 0); fixedRunRow.addView(fixedPause, fixedPauseLp);
         fixedRunRow.addView(fixedStop, new LinearLayout.LayoutParams(0, dp(38), 1));
+        Button searchCommands = button("⌕", false);
+        searchCommands.setContentDescription("البحث عن أمر أو خطوة لإضافتها إلى السكربت");
+        searchCommands.setTooltipText("بحث عن أمر");
+        LinearLayout.LayoutParams searchCommandsLp = new LinearLayout.LayoutParams(dp(42), dp(38));
+        searchCommandsLp.leftMargin = dp(3);
+        fixedRunRow.addView(searchCommands, searchCommandsLp);
         LinearLayout.LayoutParams fixedRunRowLp = new LinearLayout.LayoutParams(-1, dp(38)); fixedRunRowLp.topMargin = dp(5); root.addView(fixedRunRow, fixedRunRowLp);
         fixedRun.setOnClickListener(v -> runActiveScript());
         fixedPause.setOnClickListener(v -> { if (!running) report("لا يوجد سكربت قيد التشغيل."); else if (paused) resumeScript(); else pauseScript(); });
         fixedStop.setOnClickListener(v -> stopScript());
+        searchCommands.setOnClickListener(v -> showCommandSearchDialog());
 
         ScrollView panelScroll = new ScrollView(this);
         this.panelScrollView = panelScroll;
@@ -4258,7 +4268,148 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     // ---------------- Helpers and glass styling ----------------
     private void addButton(LinearLayout row, String title, Runnable action) {
-        Button b=button(title,true); LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(40),1); lp.setMargins(dp(2),0,dp(2),0); row.addView(b,lp); b.setOnClickListener(v->action.run());
+        Button b = button(title, true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1);
+        lp.setMargins(dp(2), 0, dp(2), 0);
+        row.addView(b, lp);
+        if (action != null) commandCatalog.add(new CommandEntry(title, action));
+        b.setOnClickListener(v -> { if (action != null) action.run(); });
+    }
+
+    /** Shows a live-filtered catalogue of the same command actions used by the visible buttons. */
+    private void showCommandSearchDialog() {
+        if (commandCatalog.isEmpty()) {
+            report("قائمة الأوامر غير جاهزة. أغلق لوحة Botna وافتحها مجددًا ثم حاول مرة أخرى.");
+            return;
+        }
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(8), dp(4), dp(8), dp(4));
+
+        EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setTextSize(15);
+        query.setTextColor(TEXT);
+        query.setHintTextColor(MUTED);
+        query.setHint("اكتب اسم الأمر، مثل: بحث، كتابة، سحب، إشعارات…");
+        query.setSelectAllOnFocus(false);
+        query.setBackground(glassShape(BUTTON, CYAN, 1, 12));
+        query.setPadding(dp(12), dp(8), dp(12), dp(8));
+        root.addView(query, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        TextView count = label("كل الأوامر المتاحة", 11, MUTED, false);
+        LinearLayout.LayoutParams countLp = wrap(); countLp.topMargin = dp(5); root.addView(count, countLp);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        LinearLayout results = new LinearLayout(this);
+        results.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(results, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, dp(300));
+        scrollLp.topMargin = dp(4); root.addView(scroll, scrollLp);
+
+        final AlertDialog[] owner = new AlertDialog[1];
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("بحث عن أمر لإضافته")
+                .setView(root)
+                .setNegativeButton("إغلاق", null)
+                .create();
+        owner[0] = dialog;
+        TextWatcher watcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int countChanged) {
+                renderCommandSearchResults(s == null ? "" : s.toString(), results, count, owner[0]);
+            }
+            @Override public void afterTextChanged(Editable editable) { }
+        };
+        query.addTextChangedListener(watcher);
+        renderCommandSearchResults("", results, count, dialog);
+        dialog.setOnShowListener(ignored -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), dp(520)),
+                        Math.min(getResources().getDisplayMetrics().heightPixels - dp(64), dp(500)));
+            }
+            query.requestFocus();
+            query.postDelayed(() -> {
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) imm.showSoftInput(query, InputMethodManager.SHOW_IMPLICIT);
+            }, 180);
+        });
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), dp(520)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(64), dp(500)));
+        }
+    }
+
+    private void renderCommandSearchResults(String queryText, LinearLayout results, TextView count, AlertDialog owner) {
+        results.removeAllViews();
+        String q = normalizeCommandSearch(queryText);
+        int matches = 0;
+        for (CommandEntry entry : new ArrayList<>(commandCatalog)) {
+            String titleKey = commandSearchIndex(entry.title);
+            if (!q.isEmpty() && !titleKey.contains(q)) continue;
+            matches++;
+            Button result = button(entry.title, true);
+            result.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(42));
+            lp.topMargin = dp(3);
+            results.addView(result, lp);
+            result.setOnClickListener(v -> {
+                if (owner != null) owner.dismiss();
+                // Let the search dialog finish closing before a command opens its own prompt/dialog.
+                handler.post(() -> {
+                    try { entry.action.run(); }
+                    catch (RuntimeException ex) { report("تعذّر تنفيذ الأمر المحدد: " + ex.getMessage()); }
+                });
+            });
+        }
+        count.setText(matches + " أمر مطابق. اضغط على أمر لإضافته أو فتح إعداداته.");
+        if (matches == 0) {
+            TextView empty = label("لا توجد أوامر مطابقة. جرّب كلمة أقصر أو مرادفًا مثل: نقر، كتابة، انتظار، بحث.", 12, MUTED, false);
+            empty.setPadding(dp(8), dp(12), dp(8), dp(12));
+            results.addView(empty, wrap());
+        }
+    }
+
+    private String commandSearchIndex(String title) {
+        String normalized = normalizeCommandSearch(title);
+        StringBuilder index = new StringBuilder(normalized);
+        // Common Arabic variants/dialect words and English labels make the catalog easier to find.
+        if (normalized.contains("كتابة نص")) index.append(" اكتب كتابة ادخال type text keyboard");
+        if (normalized.contains("نقر نص")) index.append(" اضغط انقر كبس اضغط على زر tap click text");
+        if (normalized.contains("نقر موقع")) index.append(" اضغط مكان احداثيات لمسة tap coordinate");
+        if (normalized.contains("enter") || normalized.contains("بحث")) index.append(" انتر ارسال ارسل تنفيذ بحث submit enter ime");
+        if (normalized.contains("فتح تطبيق")) index.append(" افتح شغل تشغيل launch app");
+        if (normalized.contains("فتح رابط")) index.append(" موقع افتح صفحة متصفح url website browser");
+        if (normalized.contains("انتظار صورة")) index.append(" تعرف على صورة مطابقة الصورة ظهور صورة image match");
+        if (normalized.contains("فحص الانترنت")) index.append(" افحص النت الشبكة اتصال wifi network internet");
+        if (normalized.contains("سرعة التنزيل")) index.append(" سرعة النت سرعة الانترنت قياس السرعة speed test download");
+        if (normalized.contains("الإشعارات") || normalized.contains("الاشعارات")) index.append(" تنبيهات notification notifications");
+        if (normalized.contains("الاعدادات السريعة")) index.append(" واي فاي بلوتوث quick settings");
+        if (normalized.contains("تمرير")) index.append(" اسكرول scroll نزول طلوع اعلى اسفل");
+        if (normalized.contains("سحب الشاشة")) index.append(" جر اسحب swipe drag");
+        if (normalized.contains("رجوع")) index.append(" back السابق للخلف");
+        if (normalized.contains("الرئيسية")) index.append(" home الصفحة الرئيسية");
+        if (normalized.contains("الخطوة المخصصة") || normalized.contains("مخصصة")) index.append(" امر عربي ذكاء اصطناعي custom instruction");
+        return normalizeCommandSearch(index.toString());
+    }
+
+    private String normalizeCommandSearch(String value) {
+        if (value == null) return "";
+        return value.toLowerCase(Locale.ROOT)
+                .replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+                .replace('ى', 'ي').replace('ة', 'ه')
+                .replaceAll("[\u064B-\u065F\u0670]", "")
+                .replaceAll("\\s+", " ").trim();
+    }
+
+    private static final class CommandEntry {
+        final String title;
+        final Runnable action;
+        CommandEntry(String title, Runnable action) { this.title = title; this.action = action; }
     }
     private LinearLayout horizontal() { LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL); l.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); return l; }
     private Button button(String title, boolean primary) {
