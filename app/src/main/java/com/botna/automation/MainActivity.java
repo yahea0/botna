@@ -16,6 +16,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -116,12 +117,25 @@ public class MainActivity extends Activity {
         logsButton.setOnClickListener(v -> showLogsDialog());
         smartTaskButton.setOnClickListener(v -> showSmartTaskDialog());
 
+        LinearLayout agentListsRow = new LinearLayout(this); agentListsRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams agentListsLp = matchWrap(); agentListsLp.topMargin = dp(8); dashboard.addView(agentListsRow, agentListsLp);
+        Button savedAgentTasksButton = button("مهام الوكيل المحفوظة");
+        Button agentMessagesButton = button("رسائل الوكيل");
+        agentListsRow.addView(savedAgentTasksButton, new LinearLayout.LayoutParams(0, dp(46), 1));
+        LinearLayout.LayoutParams agentMessagesLp = new LinearLayout.LayoutParams(0, dp(46), 1); agentMessagesLp.leftMargin = dp(7); agentListsRow.addView(agentMessagesButton, agentMessagesLp);
+        savedAgentTasksButton.setOnClickListener(v -> showSavedAgentTasksDialog());
+        agentMessagesButton.setOnClickListener(v -> showAgentMessagesDialog());
+
         LinearLayout dataCard = card();
         LinearLayout.LayoutParams dataLp = matchWrap(); dataLp.topMargin = dp(16); page.addView(dataCard, dataLp);
         dataCard.addView(text("بياناتك المحلية", 18, TEXT, true));
         int scriptsCount = BotnaStore.scripts(this).length();
         int imagesCount = BotnaStore.imageLibrary(this).length();
-        dataSummary = text("السكربتات المحفوظة: " + scriptsCount + "\nقوالب مكتبة الصور: " + imagesCount + "\nالمزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this)) + "\nحالة الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "إعداد API مكتمل" : "يتطلب إعداد مفتاح/نقطة اتصال API"), 14, MUTED, false);
+        dataSummary = text("السكربتات المحفوظة: " + scriptsCount + "\nقوالب مكتبة الصور: " + imagesCount
+                + "\nمهام الوكيل المحفوظة: " + BotnaAgentStore.tasks(this).length()
+                + "\nرسائل الوكيل: " + BotnaAgentStore.messages(this).length()
+                + "\nالمزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this))
+                + "\nحالة الذكاء الاصطناعي: " + (BotnaAICompiler.isConfigured(this) ? "إعداد API مكتمل" : "يتطلب إعداد مفتاح/نقطة اتصال API"), 14, MUTED, false);
         dataCard.addView(dataSummary, matchWrap());
         TextView localInfo = text("السكربتات وقوالب الصور تبقى في مساحة التطبيق. يُشفّر مفتاح API محليًا باستخدام Android Keystore؛ لا تشارك المفتاح ولا تضعه في مستودع GitHub. استخدام مزوّد الذكاء الاصطناعي عبر API قد يكلّف رسومًا حسب حسابك.", 12, MUTED, false);
         LinearLayout.LayoutParams localInfoLp = matchWrap(); localInfoLp.topMargin = dp(10); dataCard.addView(localInfo, localInfoLp);
@@ -156,27 +170,220 @@ public class MainActivity extends Activity {
         confirmation.setText("أفهم أن الوكيل سيرى لقطات الشاشة ويتحكم بالواجهة وفق المهمة، وسأراجع العمليات الحساسة بنفسي.");
         confirmation.setTextColor(MUTED); confirmation.setTextSize(12); confirmation.setChecked(false);
         LinearLayout.LayoutParams confirmLp = matchWrap(); confirmLp.topMargin = dp(8); content.addView(confirmation, confirmLp);
+        ScrollView taskScroll = new ScrollView(this);
+        taskScroll.setFillViewport(false);
+        taskScroll.setSmoothScrollingEnabled(true);
+        taskScroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout dialogRoot = new LinearLayout(this); dialogRoot.setOrientation(LinearLayout.VERTICAL);
+        dialogRoot.addView(taskScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        LinearLayout actionBar = new LinearLayout(this); actionBar.setOrientation(LinearLayout.HORIZONTAL);
+        Button startTaskButton = button("بدء المهمة"); Button cancelTaskButton = button("إلغاء");
+        actionBar.addView(startTaskButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        LinearLayout.LayoutParams cancelTaskLp = new LinearLayout.LayoutParams(0, dp(48), 1f); cancelTaskLp.leftMargin = dp(8); actionBar.addView(cancelTaskButton, cancelTaskLp);
+        LinearLayout.LayoutParams actionBarLp = matchWrap(); actionBarLp.topMargin = dp(6); dialogRoot.addView(actionBar, actionBarLp);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("إنشاء بوت ذكي للمهام الصعبة والطويلة")
-                .setView(content).setPositiveButton("بدء المهمة", null).setNegativeButton("إلغاء", null).create();
+                .setView(dialogRoot).create();
         dialog.show();
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(560)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(48), Math.round(getResources().getDisplayMetrics().heightPixels * 0.78f)));
+        }
+        task.setOnFocusChangeListener((v, focused) -> {
+            if (focused) taskScroll.postDelayed(() -> taskScroll.smoothScrollTo(0, Math.max(0, task.getBottom() - taskScroll.getHeight() + dp(32))), 300);
+        });
+        task.setOnClickListener(v -> taskScroll.postDelayed(() -> taskScroll.smoothScrollTo(0, Math.max(0, task.getBottom() - taskScroll.getHeight() + dp(32))), 300));
+        cancelTaskButton.setOnClickListener(v -> dialog.dismiss());
+        startTaskButton.setOnClickListener(v -> {
             String command = task.getText() == null ? "" : task.getText().toString().trim();
             if (command.isEmpty()) { task.setError("اكتب وصف المهمة أولًا."); return; }
             if (!confirmation.isChecked()) { Toast.makeText(this, "أكد فهمك لاستخدام لقطات الشاشة والتحكم بالواجهة أولًا.", Toast.LENGTH_LONG).show(); return; }
             if (!BotnaAICompiler.isConfigured(this)) {
                 Toast.makeText(this, "اضبط مزود API ومفتاحًا واحدًا على الأقل قبل بدء الوكيل الذكي.", Toast.LENGTH_LONG).show(); return;
             }
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, command).apply();
-            Intent start = new Intent(BotnaAccessibilityService.ACTION_START_SMART_TASK).setPackage(getPackageName()).putExtra("task", command);
-            sendBroadcast(start);
+            String taskId = BotnaAgentStore.createTask(this, command);
             dialog.dismiss();
-            if (!isServiceEnabled()) {
-                Toast.makeText(this, "حُفظت المهمة. فعّل خدمة Botna من إعدادات إمكانية الوصول، ثم افتح التطبيق مجددًا لبدئها.", Toast.LENGTH_LONG).show();
-                openAccessibilitySettings();
-            } else {
-                Toast.makeText(this, "أُرسلت المهمة إلى بوتنا. سيُراجع الشاشة بعد كل إجراء؛ أوقفها من لوحة بوتنا عند الحاجة.", Toast.LENGTH_LONG).show();
-            }
+            dispatchAgentTask(taskId, command);
         });
+    }
+
+    private void dispatchAgentTask(String taskId, String goal) {
+        if (!BotnaAICompiler.isConfigured(this)) {
+            Toast.makeText(this, "اضبط مزود API ومفتاحًا صالحًا قبل تشغيل الوكيل.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (taskId == null || taskId.trim().isEmpty()) taskId = BotnaAgentStore.createTask(this, goal);
+        if (!isServiceEnabled()) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, goal)
+                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, taskId).apply();
+            BotnaAgentStore.setStatus(this, taskId, "بانتظار تفعيل الخدمة", "فعّل خدمة إمكانية الوصول لبدء المهمة.");
+            Toast.makeText(this, "حُفظت المهمة. فعّل خدمة Botna من إعدادات إمكانية الوصول، وستبدأ بعد تفعيلها.", Toast.LENGTH_LONG).show();
+            openAccessibilitySettings();
+            return;
+        }
+        Intent start = new Intent(BotnaAccessibilityService.ACTION_START_SMART_TASK).setPackage(getPackageName())
+                .putExtra("task", goal).putExtra("agentTaskId", taskId);
+        sendBroadcast(start);
+        Toast.makeText(this, "أُرسلت المهمة إلى الوكيل. ستُحفظ خطواته ورسائله ويمكن مراجعتها لاحقًا.", Toast.LENGTH_LONG).show();
+    }
+
+    private void showSavedAgentTasksDialog() {
+        org.json.JSONArray tasks = BotnaAgentStore.tasks(this);
+        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(8), dp(5), dp(8), dp(5));
+        TextView intro = text("كل مهمة محفوظة بشكل مستقل. إعادة تشغيل الوكيل تعيد التخطيط حسب الشاشة، أما تشغيل السكربت فيعيد الإجراءات المسجلة كما هي. افتح السكربت لتعديل الخطوات داخل محرر بوتنا.", 12, MUTED, false);
+        root.addView(intro, matchWrap());
+        Button create = button("＋ إنشاء مهمة ذكية جديدة");
+        LinearLayout.LayoutParams createLp = matchWrap(); createLp.topMargin = dp(6); root.addView(create, createLp);
+        ScrollView scroll = new ScrollView(this); LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); scroll.addView(list);
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, dp(430)); scrollLp.topMargin = dp(8); root.addView(scroll, scrollLp);
+        if (tasks.length() == 0) list.addView(text("لا توجد مهام محفوظة بعد. أنشئ مهمة من الزر أعلاه.", 13, MUTED, false), matchWrap());
+        final AlertDialog[] owner = new AlertDialog[1];
+        create.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); showSmartTaskDialog(); });
+        for (int i = 0; i < tasks.length(); i++) {
+            org.json.JSONObject item = tasks.optJSONObject(i); if (item == null) continue;
+            String id = item.optString("id", ""), name = item.optString("name", "مهمة ذكية"), goal = item.optString("goal", "");
+            String scriptId = item.optString("scriptId", "");
+            LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(8), dp(7), dp(8), dp(7));
+            card.setBackground(roundDrawable(CARD, CYAN, 1, 12)); LinearLayout.LayoutParams cardLp = matchWrap(); cardLp.topMargin = dp(6); list.addView(card, cardLp);
+            card.addView(text(name, 15, TEXT, true), matchWrap());
+            TextView status = text("الحالة: " + item.optString("status", "محفوظة") + " • مرات التشغيل: " + item.optInt("runs", 0)
+                    + " • إجراءات محفوظة: " + BotnaStore.steps(BotnaStore.getScript(this, scriptId)).length(), 11, MUTED, false);
+            LinearLayout.LayoutParams statusLp = matchWrap(); statusLp.topMargin = dp(3); card.addView(status, statusLp);
+            TextView goalText = text(goal.length() > 180 ? goal.substring(0, 180) + "…" : goal, 12, MUTED, false);
+            LinearLayout.LayoutParams goalLp = matchWrap(); goalLp.topMargin = dp(4); card.addView(goalText, goalLp);
+            LinearLayout buttons1 = new LinearLayout(this); buttons1.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams buttons1Lp = matchWrap(); buttons1Lp.topMargin = dp(6); card.addView(buttons1, buttons1Lp);
+            Button replayAgent = button("إعادة الوكيل"); Button edit = button("تعديل المهمة"); Button editScript = button("تعديل السكربت");
+            buttons1.addView(replayAgent, new LinearLayout.LayoutParams(0, dp(40), 1));
+            LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(0, dp(40), 1); editLp.leftMargin = dp(4); buttons1.addView(edit, editLp);
+            LinearLayout.LayoutParams editScriptLp = new LinearLayout.LayoutParams(0, dp(40), 1); editScriptLp.leftMargin = dp(4); buttons1.addView(editScript, editScriptLp);
+            LinearLayout buttons2 = new LinearLayout(this); buttons2.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams buttons2Lp = matchWrap(); buttons2Lp.topMargin = dp(4); card.addView(buttons2, buttons2Lp);
+            Button playScript = button("تشغيل السكربت المحفوظ"); Button delete = button("حذف المهمة");
+            buttons2.addView(playScript, new LinearLayout.LayoutParams(0, dp(38), 1));
+            LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(0, dp(38), 1); deleteLp.leftMargin = dp(5); buttons2.addView(delete, deleteLp);
+            replayAgent.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); confirmRunSavedAgent(id); });
+            edit.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); showEditAgentTaskDialog(id); });
+            editScript.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); dispatchAgentScript(id, false); });
+            playScript.setOnClickListener(v -> { if (owner[0] != null) owner[0].dismiss(); dispatchAgentScript(id, true); });
+            delete.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("حذف المهمة الذكية")
+                    .setMessage("سيُحذف تعريف المهمة وسكربتها المحفوظة. تبقى رسائل الوكيل وسجلات التشخيص كي تتمكن من مراجعة ما حدث.")
+                    .setPositiveButton("حذف", (d, w) -> { BotnaAgentStore.deleteTask(this, id); if (owner[0] != null) owner[0].dismiss(); refreshStatus(); showSavedAgentTasksDialog(); })
+                    .setNegativeButton("إلغاء", null).show());
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("مهام الوكيل الذكي المحفوظة")
+                .setView(root).setPositiveButton("إغلاق", null).create();
+        dialog.show(); owner[0] = dialog;
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(560)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(48), Math.round(getResources().getDisplayMetrics().heightPixels * 0.78f)));
+        }
+    }
+
+    private void confirmRunSavedAgent(String id) {
+        org.json.JSONObject item = BotnaAgentStore.getTask(this, id); if (item == null) return;
+        new AlertDialog.Builder(this).setTitle("إعادة تشغيل الوكيل")
+                .setMessage("سيُعاد تحليل الشاشة الحالية والتحكم بواجهة الهاتف لتحقيق الهدف المحفوظ. قد يختلف المسار عن التشغيل السابق. راجع أي عملية حساسة يدويًا. متابعة؟")
+                .setPositiveButton("بدء", (d, w) -> dispatchAgentTask(id, item.optString("goal", "")))
+                .setNegativeButton("إلغاء", null).show();
+    }
+
+    private void showEditAgentTaskDialog(String id) {
+        org.json.JSONObject item = BotnaAgentStore.getTask(this, id); if (item == null) return;
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(8), dp(5), dp(8), dp(5));
+        EditText name = new EditText(this); name.setText(item.optString("name", "")); name.setSingleLine(true); name.setTextColor(TEXT); name.setHintTextColor(MUTED); name.setHint("اسم المهمة"); name.setBackground(roundDrawable(CARD, CYAN, 1, 10)); content.addView(name, matchWrap());
+        EditText goal = new EditText(this); goal.setText(item.optString("goal", "")); goal.setSingleLine(false); goal.setMinLines(4); goal.setMaxLines(12); goal.setGravity(Gravity.TOP | Gravity.START); goal.setTextColor(TEXT); goal.setHintTextColor(MUTED); goal.setHint("وصف الهدف النهائي للوكيل"); goal.setBackground(roundDrawable(CARD, CYAN, 1, 10)); LinearLayout.LayoutParams goalLp = matchWrap(); goalLp.topMargin = dp(8); content.addView(goal, goalLp);
+        ScrollView editScroll = new ScrollView(this); editScroll.setFillViewport(false); editScroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout editRoot = new LinearLayout(this); editRoot.setOrientation(LinearLayout.VERTICAL);
+        editRoot.addView(editScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        LinearLayout editActions = new LinearLayout(this); editActions.setOrientation(LinearLayout.HORIZONTAL);
+        Button saveEditButton = button("حفظ"); Button saveRunButton = button("حفظ وتشغيل"); Button cancelEditButton = button("إلغاء");
+        editActions.addView(saveEditButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        LinearLayout.LayoutParams saveRunLp = new LinearLayout.LayoutParams(0, dp(44), 1f); saveRunLp.leftMargin = dp(4); editActions.addView(saveRunButton, saveRunLp);
+        LinearLayout.LayoutParams cancelEditLp = new LinearLayout.LayoutParams(0, dp(44), 1f); cancelEditLp.leftMargin = dp(4); editActions.addView(cancelEditButton, cancelEditLp);
+        LinearLayout.LayoutParams editActionsLp = matchWrap(); editActionsLp.topMargin = dp(6); editRoot.addView(editActions, editActionsLp);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("تعديل المهمة المحفوظة").setView(editRoot).create();
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(560)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(48), Math.round(getResources().getDisplayMetrics().heightPixels * 0.78f)));
+        }
+        View.OnFocusChangeListener focusEdit = (v, focused) -> { if (focused) editScroll.postDelayed(() -> editScroll.smoothScrollTo(0, Math.max(0, v.getBottom() - editScroll.getHeight() + dp(28))), 300); };
+        name.setOnFocusChangeListener(focusEdit); goal.setOnFocusChangeListener(focusEdit);
+        name.setOnClickListener(v -> focusEdit.onFocusChange(v, true)); goal.setOnClickListener(v -> focusEdit.onFocusChange(v, true));
+        cancelEditButton.setOnClickListener(v -> dialog.dismiss());
+        saveEditButton.setOnClickListener(v -> {
+            String newGoal = goal.getText() == null ? "" : goal.getText().toString().trim();
+            if (newGoal.isEmpty()) { goal.setError("اكتب الهدف المطلوب."); return; }
+            BotnaAgentStore.updateGoal(this, id, name.getText() == null ? "" : name.getText().toString(), newGoal);
+            dialog.dismiss(); refreshStatus(); showSavedAgentTasksDialog();
+        });
+        saveRunButton.setOnClickListener(v -> {
+            String newGoal = goal.getText() == null ? "" : goal.getText().toString().trim();
+            if (newGoal.isEmpty()) { goal.setError("اكتب الهدف المطلوب."); return; }
+            BotnaAgentStore.updateGoal(this, id, name.getText() == null ? "" : name.getText().toString(), newGoal);
+            dialog.dismiss(); confirmRunSavedAgent(id);
+        });
+    }
+
+    private void dispatchAgentScript(String taskId, boolean runNow) {
+        org.json.JSONObject item = BotnaAgentStore.getTask(this, taskId); if (item == null) return;
+        String scriptId = item.optString("scriptId", "");
+        org.json.JSONObject script = BotnaStore.getScript(this, scriptId);
+        if (script == null || BotnaStore.steps(script).length() == 0) {
+            Toast.makeText(this, "لا يحتوي السكربت على إجراءات محفوظة بعد. أعد تشغيل الوكيل أولًا.", Toast.LENGTH_LONG).show(); return;
+        }
+        if (!isServiceEnabled()) { Toast.makeText(this, "فعّل خدمة Botna قبل فتح أو تشغيل السكربت.", Toast.LENGTH_LONG).show(); openAccessibilitySettings(); return; }
+        String action = runNow ? BotnaAccessibilityService.ACTION_RUN_AGENT_SCRIPT : BotnaAccessibilityService.ACTION_OPEN_AGENT_SCRIPT;
+        Intent intent = new Intent(action).setPackage(getPackageName()).putExtra("scriptId", scriptId);
+        sendBroadcast(intent);
+        Toast.makeText(this, runNow ? "أُرسل السكربت المحفوظ للتشغيل." : "افتح محرر بوتنا لتعديل إجراءات الوكيل بالتفصيل.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void showAgentMessagesDialog() {
+        org.json.JSONArray all = BotnaAgentStore.messages(this);
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(8), dp(5), dp(8), dp(5));
+        content.addView(text("رسائل تفسيرية محفوظة من الوكيل: سبب اختيار الإجراء، نتيجة تنفيذه، وتحذيرات أو أسباب التوقف. يمكن حذف سجل الرسائل دون حذف المهام.", 12, MUTED, false), matchWrap());
+        ScrollView scroll = new ScrollView(this); LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); scroll.addView(list);
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, dp(430)); scrollLp.topMargin = dp(8); content.addView(scroll, scrollLp);
+        if (all.length() == 0) list.addView(text("لا توجد رسائل بعد.", 13, MUTED, false), matchWrap());
+        int shown = 0;
+        for (int i = all.length() - 1; i >= 0 && shown < 100; i--) {
+            org.json.JSONObject msg = all.optJSONObject(i); if (msg == null) continue;
+            String title = msg.optString("timeText", "") + "\n" + msg.optString("title", "رسالة")
+                    + (msg.optBoolean("success", true) ? "" : "  ⚠");
+            Button row = button(title); row.setTextSize(12); row.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams rowLp = matchWrap(); rowLp.topMargin = dp(4); list.addView(row, rowLp);
+            row.setOnClickListener(v -> {
+                new AlertDialog.Builder(this).setTitle(msg.optString("title", "تفاصيل رسالة الوكيل"))
+                        .setMessage("الوقت: " + msg.optString("timeText", "-") + "\nالمهمة: " + agentTaskName(msg.optString("taskId", ""))
+                                + "\nالإجراء: " + (msg.optInt("actionIndex", -1) >= 0 ? msg.optInt("actionIndex") : "غير محدد")
+                                + "\nالحالة: " + (msg.optBoolean("success", true) ? "معلومة/نجاح" : "تحذير/فشل")
+                                + "\n\nالتفاصيل:\n" + msg.optString("detail", "لا توجد تفاصيل إضافية."))
+                        .setPositiveButton("إغلاق", null).show();
+            });
+            shown++;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("رسائل الوكيل")
+                .setView(content).setPositiveButton("إغلاق", null).setNegativeButton("حذف الرسائل", null).create();
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("حذف رسائل الوكيل")
+                .setMessage("سيتم حذف سجل الرسائل التفسيري فقط. تبقى مهام الوكيل وسكربتاته وسجلات التشخيص.")
+                .setPositiveButton("حذف", (d, w) -> { BotnaAgentStore.clearMessages(this); dialog.dismiss(); refreshStatus(); showAgentMessagesDialog(); })
+                .setNegativeButton("إلغاء", null).show());
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(560)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(48), Math.round(getResources().getDisplayMetrics().heightPixels * 0.78f)));
+        }
+    }
+
+    private String agentTaskName(String taskId) {
+        org.json.JSONObject task = BotnaAgentStore.getTask(this, taskId);
+        return task == null ? "مهمة محذوفة/غير معروفة" : task.optString("name", "مهمة ذكية");
     }
 
     private void showLogsDialog() {
@@ -300,6 +507,8 @@ public class MainActivity extends Activity {
         if (dataSummary != null) {
             dataSummary.setText("السكربتات المحفوظة: " + BotnaStore.scripts(this).length()
                     + "\nقوالب مكتبة الصور: " + BotnaStore.imageLibrary(this).length()
+                    + "\nمهام الوكيل المحفوظة: " + BotnaAgentStore.tasks(this).length()
+                    + "\nرسائل الوكيل: " + BotnaAgentStore.messages(this).length()
                     + "\nالمزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this))
                     + "\nالمفاتيح المحفوظة لهذا المزوّد: " + BotnaKeyVault.count(this, BotnaAICompiler.providerId(this))
                     + "\nالسجلات التشخيصية: " + BotnaLogStore.list(this).length()
