@@ -19,6 +19,7 @@ import android.graphics.PixelFormat;
 import android.graphics.RectF;
 import android.hardware.HardwareBuffer;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Display;
@@ -41,6 +42,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.inputmethod.InputMethodManager;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
 
@@ -96,6 +98,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private static final String TYPE_PRESS_ENTER = "PRESS_ENTER";
     private static final String TYPE_WAIT_TEXT = "WAIT_TEXT";
     private static final String TYPE_WAIT_INPUT = "WAIT_INPUT";
+    private static final String TYPE_GLOBAL_ACTION = "GLOBAL_ACTION";
+    private static final String TYPE_CLEAR_TEXT = "CLEAR_TEXT";
+    private static final String TYPE_CLOSE_RECENTS = "CLOSE_RECENTS";
 
     private static final int CROP_TARGET = 0;
     private static final int CROP_SEARCH_REGION = 1;
@@ -486,6 +491,17 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout addRow11 = horizontal();
         addButton(addRow11, "انتظار حقل إدخال", () -> { JSONObject step=addStep(TYPE_WAIT_INPUT,"انتظار ظهور حقل إدخال قابل للكتابة"); putInt(step,"attempts",20); putInt(step,"intervalMs",500); saveStepObject(step); rebuildPanel(); });
         LinearLayout.LayoutParams add11Lp = wrap(); add11Lp.topMargin = dp(5); content.addView(addRow11, add11Lp);
+
+        LinearLayout addRow12 = horizontal();
+        addButton(addRow12, "فتح الإشعارات", () -> addGlobalActionStep("notifications", "فتح لوحة الإشعارات"));
+        addButton(addRow12, "الإعدادات السريعة", () -> addGlobalActionStep("quick_settings", "فتح الإعدادات السريعة"));
+        addButton(addRow12, "التطبيقات الأخيرة", () -> addGlobalActionStep("recent_apps", "فتح التطبيقات الأخيرة"));
+        LinearLayout.LayoutParams add12Lp = wrap(); add12Lp.topMargin = dp(5); content.addView(addRow12, add12Lp);
+        LinearLayout addRow13 = horizontal();
+        addButton(addRow13, "إغلاق الإشعارات", () -> addGlobalActionStep("dismiss_notifications", "إغلاق لوحة الإشعارات"));
+        addButton(addRow13, "إغلاق التطبيقات الأخيرة", () -> { JSONObject step=addStep(TYPE_CLOSE_RECENTS,"إغلاق التطبيقات الأخيرة الظاهرة"); saveStepObject(step); rebuildPanel(); });
+        addButton(addRow13, "مسح حقل الكتابة", () -> { JSONObject step=addStep(TYPE_CLEAR_TEXT,"مسح حقل الإدخال المركّز"); saveStepObject(step); rebuildPanel(); });
+        LinearLayout.LayoutParams add13Lp = wrap(); add13Lp.topMargin = dp(5); content.addView(addRow13, add13Lp);
 
         LinearLayout runRow = horizontal();
         Button run = button("▶ تشغيل", true);
@@ -931,6 +947,32 @@ public class BotnaAccessibilityService extends AccessibilityService {
             });
         } else if (TYPE_PRESS_ENTER.equals(type)) {
             showChoice("إعدادات Enter/بحث", new String[]{"اختبار الآن", "تفعيل/تعطيل", "حذف"}, choice -> { if(choice==0){boolean ok=performImeEnter();report(ok?"تم إرسال أمر Enter/بحث.":"لم يقبل حقل الإدخال أمر Enter. جرّب خطوة نقر على زر بحث ظاهر.");}else if(choice==1)toggleStep(script,step);else confirmDeleteStep(index); });
+        } else if (TYPE_GLOBAL_ACTION.equals(type)) {
+            showChoice("إعدادات إجراء النظام", new String[]{"تغيير إجراء النظام", "اختبار الخطوة", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if (choice == 0) showChoice("اختر إجراء النظام", new String[]{"فتح الإشعارات", "الإعدادات السريعة", "التطبيقات الأخيرة", "إغلاق الإشعارات"}, selected -> {
+                    String[] values={"notifications","quick_settings","recent_apps","dismiss_notifications"};
+                    String[] labels={"فتح لوحة الإشعارات","فتح الإعدادات السريعة","فتح التطبيقات الأخيرة","إغلاق لوحة الإشعارات"};
+                    putString(step,"systemAction",values[selected]); putString(step,"label",labels[selected]); BotnaStore.saveSteps(this,script,steps); rebuildPanel();
+                });
+                else if (choice == 1) testStep(index);
+                else if (choice == 2) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,v->saveStepInt(script,step,"beforeDelay",v));
+                else if (choice == 3) promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,v->saveStepInt(script,step,"afterDelay",v));
+                else if (choice == 4) toggleStep(script,step); else confirmDeleteStep(index);
+            });
+        } else if (TYPE_CLOSE_RECENTS.equals(type)) {
+            showChoice("إعداد إغلاق التطبيقات الأخيرة", new String[]{"اختبار الآن", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(choice==0)testStep(index);
+                else if(choice==1)promptNumber("انتظار قبل التنفيذ (ms)",step.optInt("beforeDelay",0),0,60000,v->saveStepInt(script,step,"beforeDelay",v));
+                else if(choice==2)promptNumber("انتظار بعد التنفيذ (ms)",step.optInt("afterDelay",0),0,60000,v->saveStepInt(script,step,"afterDelay",v));
+                else if(choice==3)toggleStep(script,step);else confirmDeleteStep(index);
+            });
+        } else if (TYPE_CLEAR_TEXT.equals(type)) {
+            showChoice("إعداد مسح حقل الإدخال", new String[]{"اختبار الآن", "انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "تفعيل/تعطيل", "حذف"}, choice -> {
+                if(choice==0){boolean ok=clearFocusedField();report(ok?"تم مسح النص من حقل الإدخال المركّز.":"لم يمكن مسح النص؛ انقر حقلًا قابلًا للتحرير أولًا.");}
+                else if(choice==1)promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,v->saveStepInt(script,step,"beforeDelay",v));
+                else if(choice==2)promptNumber("انتظار بعد التنفيذ (مللي ثانية)",step.optInt("afterDelay",0),0,60000,v->saveStepInt(script,step,"afterDelay",v));
+                else if(choice==3)toggleStep(script,step);else confirmDeleteStep(index);
+            });
         } else if (TYPE_BACK.equals(type) || TYPE_HOME.equals(type)) {
             showChoice("إعدادات خطوة النظام", new String[]{"انتظار قبل التنفيذ", "انتظار بعد التنفيذ", "اختبار الخطوة", "تفعيل/تعطيل", "حذف"}, choice -> {
                 if(choice==0) promptNumber("انتظار قبل التنفيذ (مللي ثانية)",step.optInt("beforeDelay",0),0,60000,value->saveStepInt(script,step,"beforeDelay",value));
@@ -961,6 +1003,58 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void saveStepInt(JSONObject script, JSONObject step, String key, int value) {
         putInt(step, key, value); BotnaStore.saveSteps(this, script, BotnaStore.steps(script)); rebuildPanel();
+    }
+
+    private void addGlobalActionStep(String action, String label) {
+        JSONObject step = addStep(TYPE_GLOBAL_ACTION, label); putString(step, "systemAction", action); saveStepObject(step); rebuildPanel();
+    }
+
+    private void addGlobalActionToArray(JSONArray target, String action, String label) {
+        JSONObject step = compiledStep(TYPE_GLOBAL_ACTION, label); putString(step, "systemAction", action); target.put(step);
+    }
+
+    private interface BooleanCallback { void done(boolean success); }
+
+    private void closeRecentAppsAsync(BooleanCallback callback) {
+        if (!performGlobalAction(GLOBAL_ACTION_RECENTS)) { callback.done(false); return; }
+        // Wait for the launcher/Recents surface to become accessible, then only tap a visible label.
+        handler.postDelayed(() -> callback.done(clickAnyTextOnScreen("إغلاق الكل", "إغلاق جميع التطبيقات", "مسح الكل", "Close all", "Clear all", "Close all apps")), 850);
+    }
+
+    private boolean clickAnyTextOnScreen(String... labels) {
+        for (String text : labels) if (clickText(text)) return true;
+        return false;
+    }
+
+    private boolean performSystemAction(String action) {
+        if ("notifications".equals(action)) return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+        if ("quick_settings".equals(action)) return performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
+        if ("recent_apps".equals(action)) return performGlobalAction(GLOBAL_ACTION_RECENTS);
+        if ("dismiss_notifications".equals(action)) {
+            return Build.VERSION.SDK_INT >= 31 && performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE);
+        }
+        return false;
+    }
+
+    private boolean clearFocusedField() {
+        AccessibilityNodeInfo root = findTargetRoot();
+        if (root == null) return false;
+        AccessibilityNodeInfo focused = null;
+        try {
+            // Never clear an arbitrary editable field; only modify the field that currently
+            // owns input focus so a saved login/form value elsewhere is not wiped by accident.
+            focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (focused == null || !focused.isEditable() || !focused.isEnabled()) return false;
+            Bundle args = new Bundle();
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "");
+            if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true;
+            CharSequence text = focused.getText();
+            if (text == null || text.length() == 0) return true;
+            return false;
+        } finally {
+            if (focused != null) try { focused.recycle(); } catch (Exception ignored) { }
+            try { root.recycle(); } catch (Exception ignored) { }
+        }
     }
 
     private void toggleStep(JSONObject script, JSONObject step) {
@@ -1298,29 +1392,23 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 if (owningScript == null || latest == null) { report("لم يتم العثور على السكربت أو الخطوة المطلوب حفظها."); return; }
                 saveCustomDraft(scriptId, stepId, command);
 
-                Button saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-                saveButton.setEnabled(false); saveButton.setText("جارٍ التحليل…");
-                report("جارٍ تحليل الأمر وحفظ نصه الأصلي…");
                 JSONArray librarySnapshot = BotnaStore.imageLibrary(this);
                 boolean useAI = BotnaAICompiler.isConfigured(this);
-                if (useAI && includeScreenContext.isChecked()) {
-                    final boolean restorePanel = panelVisible;
-                    report("جارٍ إخفاء واجهة Botna مؤقتًا لقراءة الشاشة الحالية…");
-                    dialog.hide();
-                    hidePanel();
-                    removeView(bubble); bubble = null;
+                boolean useScreen = useAI && includeScreenContext.isChecked();
+                // Close every Botna surface before collecting the screenshot. The editor must not
+                // be shown again until compilation is finished, otherwise it contaminates vision.
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+                input.clearFocus();
+                dialog.dismiss();
+                hideBotnaOverlaysForCleanScreenshot();
+                if (useScreen) {
                     handler.postDelayed(() -> takeScreenshot((screen, error) -> {
-                        if (restorePanel) showPanel(); else showBubble();
-                        dialog.show();
-                        if (screen == null) {
-                            report("تعذر التقاط الشاشة للسياق البصري؛ ستُحلّل التعليمات نصيًا: " + error);
-                        } else {
-                            report("تم التقاط الشاشة. جارٍ تحليل الأمر مع السياق البصري…");
-                        }
-                        compileCustomInstructionsAsync(command, scriptId, stepId, librarySnapshot, useAI, saveButton, dialog, screen);
-                    }), 240);
+                        if (screen == null) saveResult("لم تُلتقط لقطة سياق نظيفة؛ ستتم محاولة الترجمة النصية فقط: " + error);
+                        compileCustomInstructionsAsync(command, scriptId, stepId, librarySnapshot, useAI, null, null, screen);
+                    }), 500);
                 } else {
-                    compileCustomInstructionsAsync(command, scriptId, stepId, librarySnapshot, useAI, saveButton, dialog, null);
+                    compileCustomInstructionsAsync(command, scriptId, stepId, librarySnapshot, useAI, null, null, null);
                 }
             });
         } catch (Exception e) { report("تعذر فتح محرر الخطوة المخصصة."); }
@@ -1368,7 +1456,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                             warnings.add("تعذر التحليل المحلي: " + e.getClass().getSimpleName());
                         }
                     }
-                    JSONArray finalCompiled = compiled;
+                    JSONArray finalCompiled = autoTuneCompiledPlan(compiled, command);
                     List<String> finalWarnings = new ArrayList<>(warnings);
                     String finalSource = source;
                     String finalAiFailure = aiFailure;
@@ -1377,7 +1465,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                         JSONObject target = findStepById(targetScript, stepId);
                         if (targetScript == null || target == null) {
                             report("تم حفظ النص، لكن تعذر العثور على السكربت أو الخطوة لإكمال الترجمة.");
-                            dialog.dismiss(); rebuildPanel(); return;
+                            safeDismiss(dialog); rebuildPanel(); showBubble(); return;
                         }
                         putString(target, "instructions", command);
                         try {
@@ -1390,13 +1478,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
                         if (finalCompiled.length() == 0) {
                             putString(target, "label", "خطوة مخصصة — نص محفوظ، يحتاج ترجمة");
                             BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
-                            dialog.dismiss(); rebuildPanel();
+                            safeDismiss(dialog); rebuildPanel(); showBubble();
                             report("حُفظ النص الأصلي كمسودة ولم ينتج التحليل خطوات آمنة قابلة للتنفيذ. " + (finalAiFailure.isEmpty() ? "" : "سبب AI: " + finalAiFailure));
                             return;
                         }
                         putString(target, "label", "خطوة مخصصة • " + finalCompiled.length() + " أمر");
                         BotnaStore.saveSteps(this, targetScript, BotnaStore.steps(targetScript));
-                        dialog.dismiss(); rebuildPanel();
+                        safeDismiss(dialog); rebuildPanel(); showBubble();
                         StringBuilder message = new StringBuilder("تم حفظ النص وترجمته إلى ").append(finalCompiled.length()).append(" أمرًا.");
                         if (!finalWarnings.isEmpty()) message.append(" توجد ").append(finalWarnings.size()).append(" تنبيهات؛ افتح معاينة الترجمة.");
                         if ("local".equals(finalSource)) message.append(" (المحلّل المحلي)");
@@ -1409,9 +1497,33 @@ public class BotnaAccessibilityService extends AccessibilityService {
             });
         } catch (Exception e) {
             if (screenContext != null && !screenContext.isRecycled()) screenContext.recycle();
-            saveButton.setEnabled(true); saveButton.setText("تحليل وحفظ");
+            safeDismiss(dialog); rebuildPanel(); showBubble();
             report("تعذر بدء التحليل. تم الاحتفاظ بالنص الأصلي.");
         }
+    }
+
+    private JSONArray autoTuneCompiledPlan(JSONArray input, String sourceText) {
+        JSONArray tuned = new JSONArray();
+        if (input == null) return tuned;
+        String text = normalizeArabicCommand(sourceText == null ? "" : sourceText);
+        boolean likelySlowLaunch = text.contains("لعبة") || text.contains("اللعبه") || text.contains("تحميل") || text.contains("تنتهي") || text.contains("تسجيل الدخول");
+        for (int i=0; i<input.length(); i++) {
+            JSONObject original=input.optJSONObject(i); if(original==null)continue;
+            JSONObject step;
+            try { step=new JSONObject(original.toString()); } catch(JSONException e) { continue; }
+            String type=step.optString("type","");
+            if (TYPE_LAUNCH_APP.equals(type) && step.optInt("afterDelay",0)<=0) putInt(step,"afterDelay",likelySlowLaunch?5000:3000);
+            else if ((TYPE_TAP.equals(type)||TYPE_TEXT.equals(type)||TYPE_TYPE_TEXT.equals(type)||TYPE_PRESS_ENTER.equals(type)||TYPE_GLOBAL_ACTION.equals(type)||TYPE_SWIPE.equals(type)) && step.optInt("afterDelay",0)<=0) putInt(step,"afterDelay",350);
+            if (TYPE_IMAGE.equals(type)) {
+                putInt(step,"threshold",clampInt(step.optInt("threshold",85),50,99));
+                putInt(step,"retries",clampInt(step.optInt("retries",3),1,10));
+                putInt(step,"retryDelay",clampInt(step.optInt("retryDelay",500),100,10000));
+            }
+            if ((TYPE_WAIT_TEXT.equals(type)||TYPE_WAIT_INPUT.equals(type)) && !step.has("attempts")) putInt(step,"attempts",30);
+            if ((TYPE_WAIT_TEXT.equals(type)||TYPE_WAIT_INPUT.equals(type)) && !step.has("intervalMs")) putInt(step,"intervalMs",500);
+            tuned.put(step);
+        }
+        return tuned;
     }
 
     private String customDraftPreferenceKey(String scriptId, String stepId) {
@@ -1454,6 +1566,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         JSONArray actions = plan == null ? null : plan.optJSONArray("steps");
         if (actions == null) throw new JSONException("لا توجد قائمة خطوات في نتيجة AI.");
         for (int i = 0; i < actions.length() && i < 200; i++) {
+            int outputBefore = output.length();
             JSONObject action = actions.optJSONObject(i);
             if (action == null) { warnings.add("تم تجاهل عنصر غير صالح رقم " + (i + 1)); continue; }
             String name = normalizeArabicCommand(action.optString("action", "")).toLowerCase(Locale.ROOT).trim();
@@ -1529,6 +1642,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 case "press_enter":
                 case "press_search":
                 case "ime_enter": addCompiled(output, TYPE_PRESS_ENTER, "تنفيذ Enter/بحث"); break;
+                case "clear_text": addCompiled(output, TYPE_CLEAR_TEXT, "مسح حقل الإدخال المركّز"); break;
+                case "open_notifications": addGlobalActionToArray(output, "notifications", "فتح لوحة الإشعارات"); break;
+                case "open_quick_settings": addGlobalActionToArray(output, "quick_settings", "فتح الإعدادات السريعة"); break;
+                case "open_recent_apps": addGlobalActionToArray(output, "recent_apps", "فتح التطبيقات الأخيرة"); break;
+                case "dismiss_notifications": addGlobalActionToArray(output, "dismiss_notifications", "إغلاق لوحة الإشعارات"); break;
+                case "close_recent_apps": addCompiled(output, TYPE_CLOSE_RECENTS, "إغلاق التطبيقات الأخيرة الظاهرة"); break;
                 case "wait": {
                     int delay = clampInt(action.optInt("delay_ms", action.optInt("delay", 500)), 0, 60000);
                     step = compiledStep(TYPE_WAIT, "انتظار " + delay + " ms"); putInt(step, "delay", delay); output.put(step); break;
@@ -1551,6 +1670,19 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     String value = action.optString("text", ""); if (value.isEmpty()) { warnings.add("الخطوة " + (i + 1) + ": نص الكتابة فارغ."); continue; }
                     step = compiledStep(TYPE_TYPE_TEXT, "كتابة نص: " + value); putString(step, "value", value); output.put(step); break;
                 }
+                case "swipe": {
+                    int x1=clampInt(action.optInt("x1_percent", 50),0,100), y1=clampInt(action.optInt("y1_percent",75),0,100);
+                    int x2=clampInt(action.optInt("x2_percent",50),0,100), y2=clampInt(action.optInt("y2_percent",25),0,100);
+                    int duration=clampInt(action.optInt("duration_ms",450),100,5000);
+                    step=compiledStep(TYPE_SWIPE,"سحب من "+x1+"%, "+y1+"% إلى "+x2+"%, "+y2+"%");
+                    putInt(step,"x1",x1);putInt(step,"y1",y1);putInt(step,"x2",x2);putInt(step,"y2",y2);putInt(step,"duration",duration);output.put(step);break;
+                }
+                case "check_text":
+                case "verify_text": {
+                    String value=action.optString("text","").trim();
+                    if(value.isEmpty()){warnings.add("الخطوة "+(i+1)+": نص التحقق فارغ.");continue;}
+                    step=compiledStep(TYPE_WAIT_TEXT,"التحقق من ظهور النص: "+value);putString(step,"value",value);putInt(step,"attempts",1);putInt(step,"intervalMs",250);output.put(step);break;
+                }
                 case "scroll": {
                     String direction = action.optString("direction", "up").toLowerCase(Locale.ROOT);
                     if (!direction.equals("up") && !direction.equals("down") && !direction.equals("left") && !direction.equals("right")) direction = "up";
@@ -1567,29 +1699,120 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 case "repeat_end": addCompiled(output, TYPE_REPEAT_END, "نهاية التكرار"); break;
                 default: warnings.add("الخطوة " + (i + 1) + ": فعل غير مدعوم من مترجم AI: " + name); break;
             }
+            if (output.length() > outputBefore) {
+                JSONObject produced = output.optJSONObject(output.length() - 1);
+                if (produced != null && action.has("before_delay_ms")) putInt(produced, "beforeDelay", clampInt(action.optInt("before_delay_ms", 0), 0, 60000));
+                if (produced != null && action.has("after_delay_ms")) putInt(produced, "afterDelay", clampInt(action.optInt("after_delay_ms", 0), 0, 60000));
+                if (produced != null && action.has("threshold")) putInt(produced, "threshold", clampInt(action.optInt("threshold", 85), 50, 99));
+                if (produced != null && action.has("retries")) putInt(produced, "retries", clampInt(action.optInt("retries", 3), 1, 10));
+                if (produced != null && action.has("retry_delay_ms")) putInt(produced, "retryDelay", clampInt(action.optInt("retry_delay_ms", 500), 100, 10000));
+            }
         }
         if (actions.length() > 200) warnings.add("تم الاقتصار على أول 200 خطوة حمايةً من خطة مفرطة الطول.");
         return output;
     }
     private void previewCustomCompilation(JSONObject step) {
-        JSONArray compiled = step.optJSONArray("compiledSteps");
-        JSONArray warnings = step.optJSONArray("compileWarnings");
-        StringBuilder text = new StringBuilder();
-        text.append("النص الأصلي:\n").append(step.optString("instructions", "(فارغ)")).append("\n\nالأوامر المترجمة:\n");
-        if (compiled == null || compiled.length() == 0) {
-            text.append("لا توجد أوامر مترجمة قابلة للتنفيذ. النص الأصلي محفوظ كمسودة إذا كُتب في المحرر.\n");
-        } else for (int i=0; i<compiled.length(); i++) {
-            JSONObject child=compiled.optJSONObject(i);
-            text.append(i+1).append(". ").append(child==null?"خطوة غير صالحة":child.optString("label", child.optString("type"))).append("\n");
+        if (step == null) return;
+        showCompiledBlockEditor(step);
+    }
+
+    private void showCompiledBlockEditor(JSONObject parentStep) {
+        if (parentStep == null) return;
+        final String parentId = parentStep.optString("id", "");
+        JSONObject script = ensureScript();
+        JSONObject latestParent = findStepById(script, parentId);
+        if (latestParent == null) latestParent = parentStep;
+        JSONArray compiled = latestParent.optJSONArray("compiledSteps");
+        if (compiled == null) compiled = new JSONArray();
+        JSONArray warnings = latestParent.optJSONArray("compileWarnings");
+        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(12),dp(8),dp(12),dp(8));
+        TextView source = label("النص الأصلي: " + latestParent.optString("instructions", ""), 12, MUTED, false);
+        root.addView(source, wrap());
+        ScrollView scroll = new ScrollView(this); LinearLayout blocks = new LinearLayout(this); blocks.setOrientation(LinearLayout.VERTICAL);
+        if (compiled.length() == 0) {
+            TextView empty = label("لا توجد أوامر مترجمة قابلة للتنفيذ. النص الأصلي محفوظ ويمكن إعادة تحليله.", 13, TEXT, false); blocks.addView(empty, wrap());
+        }
+        for (int i=0; i<compiled.length(); i++) {
+            JSONObject child = compiled.optJSONObject(i); if (child == null) continue;
+            final int index = i;
+            LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(10),dp(8),dp(10),dp(8));
+            card.setBackground(glassShape(Color.argb(220,14,27,40),Color.argb(190,35,226,244),1,12));
+            TextView title = label((i+1)+". "+child.optString("label",child.optString("type","خطوة")),13,TEXT,true);
+            card.addView(title,wrap());
+            TextView meta = label("النوع: "+child.optString("type","-")+" • قبل: "+child.optInt("beforeDelay",0)+" ms • بعد: "+child.optInt("afterDelay",0)+" ms • "+(child.optBoolean("enabled",true)?"مفعّل":"معطّل"),10,MUTED,false);
+            LinearLayout.LayoutParams metaLp=wrap();metaLp.topMargin=dp(2);card.addView(meta,metaLp);
+            Button edit = button("تغيير الإعدادات",false); edit.setTextSize(11);
+            LinearLayout.LayoutParams editLp=wrap();editLp.topMargin=dp(5);card.addView(edit,editLp);
+            View.OnClickListener opener = v -> editCompiledBlockSettings(parentId,index);
+            title.setOnClickListener(opener); card.setOnClickListener(opener); edit.setOnClickListener(opener);
+            LinearLayout.LayoutParams cardLp=wrap();cardLp.topMargin=dp(6);blocks.addView(card,cardLp);
         }
         if (warnings != null && warnings.length()>0) {
-            text.append("\nعبارات لم تُفهم بالكامل:\n");
-            for(int i=0;i<warnings.length();i++) text.append("• ").append(warnings.optString(i)).append("\n");
+            TextView warningTitle = label("ملاحظات الترجمة",12,Color.rgb(255,190,110),true); LinearLayout.LayoutParams wt=wrap();wt.topMargin=dp(8);blocks.addView(warningTitle,wt);
+            for(int i=0;i<warnings.length();i++){TextView w=label("• "+warnings.optString(i),11,MUTED,false);blocks.addView(w,wrap());}
         }
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("معاينة الترجمة البرمجية").setMessage(text.toString()).setPositiveButton("حسنًا",null).create();
-        try { if (dialog.getWindow()!=null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
-        catch(Exception e) { report("تعذر عرض معاينة الأوامر."); }
+        scroll.addView(blocks); LinearLayout.LayoutParams scrollLp=new LinearLayout.LayoutParams(-1,dp(390));scrollLp.topMargin=dp(8);root.addView(scroll,scrollLp);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("بلوكات الخطوة المخصصة • "+compiled.length()).setView(root).setPositiveButton("إغلاق",null)
+                .setNeutralButton("إعادة تحليل النص",null).create();
+        try {
+            if(dialog.getWindow()!=null)dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
+            dialog.show();
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->{dialog.dismiss();JSONObject now=findStepById(ensureScript(),parentId);if(now!=null)editCustomInstructions(now);});
+        } catch(Exception e){report("تعذر عرض بلوكات الخطوة المخصصة.");}
     }
+
+    private void editCompiledBlockSettings(String parentId, int blockIndex) {
+        JSONObject script=ensureScript(); JSONObject parent=findStepById(script,parentId); if(parent==null)return;
+        JSONArray blocks=parent.optJSONArray("compiledSteps"); if(blocks==null||blockIndex<0||blockIndex>=blocks.length())return;
+        JSONObject block=blocks.optJSONObject(blockIndex);if(block==null)return;
+        String type=block.optString("type","");
+        ArrayList<String> options=new ArrayList<>();
+        options.add("انتظار قبل التنفيذ"); options.add("انتظار بعد التنفيذ");
+        if(TYPE_IMAGE.equals(type)){options.add("دقة مطابقة الصورة");options.add("عدد محاولات العثور على الصورة");options.add("الفاصل بين المحاولات");}
+        else if(TYPE_WAIT.equals(type)){options.add("مدة الانتظار");}
+        else if(TYPE_LONG_PRESS.equals(type)){options.add("مدة الضغط المطوّل");options.add("إحداثيات النقر");}
+        else if(TYPE_TAP.equals(type)){options.add("إحداثيات النقر");}
+        else if(TYPE_TYPE_TEXT.equals(type)||TYPE_TEXT.equals(type)){options.add("النص");if(TYPE_TEXT.equals(type))options.add("عدد المحاولات");}
+        else if(TYPE_WAIT_TEXT.equals(type)){options.add("النص المنتظر");options.add("عدد المحاولات");options.add("الفاصل بين المحاولات");}
+        else if(TYPE_WAIT_INPUT.equals(type)){options.add("عدد المحاولات");options.add("الفاصل بين المحاولات");}
+        else if(TYPE_SCROLL.equals(type)){options.add("اتجاه التمرير");options.add("مدة التمرير");}
+        else if(TYPE_SWIPE.equals(type)){options.add("إحداثيات السحب");options.add("مدة السحب");}
+        else if(TYPE_LAUNCH_APP.equals(type)){options.add("اسم التطبيق");}
+        else if(TYPE_OPEN_URL.equals(type)){options.add("الرابط");}
+        else if(TYPE_GLOBAL_ACTION.equals(type)){options.add("إجراء النظام");}
+        else if(TYPE_CHECK_INTERNET.equals(type)||TYPE_WAIT_INTERNET.equals(type)){options.add("عدد المحاولات");options.add("الفاصل بين المحاولات");}
+        else if(TYPE_REPEAT_START.equals(type)){options.add("عدد التكرارات");}
+        options.add(block.optBoolean("enabled",true)?"تعطيل هذا البلوك":"تفعيل هذا البلوك");
+        options.add("حذف هذا البلوك");
+        final String[] items=options.toArray(new String[0]);
+        new AlertDialog.Builder(this).setTitle("تغيير إعدادات البلوك "+(blockIndex+1)).setItems(items,(d,choice)->{
+            String selected=items[choice];
+            if(selected.equals("انتظار قبل التنفيذ")){promptNumber("انتظار قبل التنفيذ (0–60000 ms)",block.optInt("beforeDelay",0),0,60000,v->updateCompiledBlock(parentId,blockIndex,"beforeDelay",v));return;}
+            if(selected.equals("انتظار بعد التنفيذ")){promptNumber("انتظار بعد التنفيذ (0–60000 ms)",block.optInt("afterDelay",0),0,60000,v->updateCompiledBlock(parentId,blockIndex,"afterDelay",v));return;}
+            if(selected.equals("دقة مطابقة الصورة")){promptNumber("دقة المطابقة (50–99%)",block.optInt("threshold",85),50,99,v->updateCompiledBlock(parentId,blockIndex,"threshold",v));return;}
+            if(selected.equals("عدد محاولات العثور على الصورة")||selected.equals("عدد المحاولات")){promptNumber("عدد المحاولات",block.optInt("retries",block.optInt("attempts",3)),1,720,v->updateCompiledBlock(parentId,blockIndex,TYPE_IMAGE.equals(type)?"retries":"attempts",v));return;}
+            if(selected.equals("الفاصل بين المحاولات")){promptNumber("الفاصل بين المحاولات (ms)",block.optInt("retryDelay",block.optInt("intervalMs",500)),100,60000,v->updateCompiledBlock(parentId,blockIndex,TYPE_IMAGE.equals(type)?"retryDelay":"intervalMs",v));return;}
+            if(selected.equals("مدة الانتظار")){promptNumber("مدة الانتظار (ms)",block.optInt("delay",500),0,60000,v->updateCompiledBlock(parentId,blockIndex,"delay",v));return;}
+            if(selected.equals("مدة الضغط المطوّل")){promptNumber("مدة الضغط المطوّل (ms)",block.optInt("duration",800),300,5000,v->updateCompiledBlock(parentId,blockIndex,"duration",v));return;}
+            if(selected.equals("إحداثيات النقر")){promptText("الإحداثيات النسبية x,y من 0 إلى 100",block.optInt("xPercent",50)+","+block.optInt("yPercent",50),v->{try{String[] xy=v.split(",");if(xy.length!=2)throw new NumberFormatException();JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;putInt(current,"xPercent",clampInt(Integer.parseInt(xy[0].trim()),0,100));putInt(current,"yPercent",clampInt(Integer.parseInt(xy[1].trim()),0,100));saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));}catch(Exception ex){report("اكتب الإحداثيات بالشكل 50,40.");}});return;}
+            if(selected.equals("النص")||selected.equals("النص المنتظر")){promptText("النص",block.optString("value",""),v->{JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;putString(current,"value",v);putString(current,"label",(TYPE_WAIT_TEXT.equals(type)?"انتظار ظهور النص: ":TYPE_TEXT.equals(type)?"نقر نص: ":"كتابة نص: ")+v);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));});return;}
+            if(selected.equals("اتجاه التمرير")){showChoice("اتجاه التمرير",new String[]{"للأعلى","للأسفل","لليمين","لليسار"},c->{String[] values={"up","down","right","left"};JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;putString(current,"direction",values[c]);putString(current,"label","تمرير "+values[c]);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));});return;}
+            if(selected.equals("مدة التمرير")){promptNumber("مدة التمرير (ms)",block.optInt("duration",450),100,5000,v->updateCompiledBlock(parentId,blockIndex,"duration",v));return;}
+            if(selected.equals("إحداثيات السحب")){promptText("x1,y1,x2,y2 — نسب من 0 إلى 100",block.optInt("x1",50)+","+block.optInt("y1",75)+","+block.optInt("x2",50)+","+block.optInt("y2",25),v->{try{String[] xy=v.split(",");if(xy.length!=4)throw new NumberFormatException();JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;String[] keys={"x1","y1","x2","y2"};for(int j=0;j<4;j++)putInt(current,keys[j],clampInt(Integer.parseInt(xy[j].trim()),0,100));putString(current,"label","سحب من "+current.optInt("x1",50)+"%, "+current.optInt("y1",75)+"% إلى "+current.optInt("x2",50)+"%, "+current.optInt("y2",25)+"%");saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));}catch(Exception ex){report("اكتب أربع قيم بالشكل 50,75,50,25.");}});return;}
+            if(selected.equals("مدة السحب")){promptNumber("مدة السحب (ms)",block.optInt("duration",450),100,5000,v->updateCompiledBlock(parentId,blockIndex,"duration",v));return;}
+            if(selected.equals("اسم التطبيق")){promptText("اسم التطبيق",block.optString("appName",""),v->{JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;putString(current,"appName",v);putString(current,"label","فتح تطبيق: "+v);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));});return;}
+            if(selected.equals("الرابط")){promptText("رابط HTTP/HTTPS",block.optString("url",""),v->{if(!v.startsWith("https://")&&!v.startsWith("http://")){report("الرابط يجب أن يبدأ بـ HTTP أو HTTPS.");return;}JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;putString(current,"url",v);putString(current,"label","فتح رابط: "+v);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));});return;}
+            if(selected.equals("إجراء النظام")){showChoice("إجراء النظام",new String[]{"الإشعارات","الإعدادات السريعة","التطبيقات الأخيرة","إغلاق الإشعارات"},c->{String[] values={"notifications","quick_settings","recent_apps","dismiss_notifications"};JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;putString(current,"systemAction",values[c]);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));});return;}
+            if(selected.equals("عدد التكرارات")){promptNumber("عدد التكرارات (1–1000)",block.optInt("repeatCount",2),1,1000,v->updateCompiledBlock(parentId,blockIndex,"repeatCount",v));return;}
+            JSONObject current=findCompiledBlock(parentId,blockIndex);if(current==null)return;
+            if(selected.startsWith("تعطيل")||selected.startsWith("تفعيل")){putBoolean(current,"enabled",!current.optBoolean("enabled",true));saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));}
+            else if(selected.equals("حذف هذا البلوك")){blocks.remove(blockIndex);try{parent.put("compiledSteps",blocks);}catch(JSONException ignored){}saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));}
+        }).show();
+    }
+
+    private JSONObject findCompiledBlock(String parentId,int index){JSONObject parent=findStepById(ensureScript(),parentId);JSONArray a=parent==null?null:parent.optJSONArray("compiledSteps");return a==null?null:a.optJSONObject(index);}
+    private void saveCompiledBlockParent(String parentId){JSONObject script=ensureScript();JSONObject parent=findStepById(script,parentId);if(parent!=null)BotnaStore.saveSteps(this,script,BotnaStore.steps(script));}
+    private void updateCompiledBlock(String parentId,int index,String key,int value){JSONObject block=findCompiledBlock(parentId,index);if(block==null)return;putInt(block,key,value);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));}
 
     private String normalizeArabicCommand(String raw) {
         String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
@@ -1607,8 +1830,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         // remains inside the IF block instead of being emitted after END_IF.
         final String conditionalThenToken = "__botna_conditional_then__";
         clean = clean.replaceAll("(?iu)((?:اذا|إذا)\\s+(?:وجدتها|وجدته|ظهرت|لقيتها|لم\\s+تجدها|لم\\s+تجده|ما\\s+لقيتها|لم\\s+تظهر).*?)\\s+ثم\\s+", "$1 " + conditionalThenToken + " ");
+        clean = clean.replaceAll("(?iu)\\s+و(?=(?:ابحث|دور|دوّر|فتش|اكتب|اغلق|اقفل|اسحب|مرر|انقر|اضغط|افتح|شغل))", ";");
         // Other sequence connectors split the natural-language request into actions.
-        String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+ثم\\s+|\\s+بعد ذلك\\s+|\\s+بعدها\\s+");
+        String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+(?:ثم|وبعدين|بعدين|بعد ذلك|بعدها|ومن ثم)\\s+");
         Deque<String> structure = new ArrayDeque<>();
         for (String raw : clauses) {
             String clause = raw.trim(); if (clause.isEmpty()) continue;
@@ -1674,7 +1898,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             if (norm.equals("اذا نجح") || norm.equals("اذا فشل")) {
                 addCompiled(result,norm.contains("فشل")?TYPE_IF_FAIL:TYPE_IF_SUCCESS,norm); structure.push("IF"); continue;
             }
-            parseCustomAction(norm,result,warnings,BotnaStore.imageLibrary(this));
+            parseCustomAction(clause,result,warnings,BotnaStore.imageLibrary(this));
         }
         while(!structure.isEmpty()) {
             String kind=structure.pop();
@@ -1684,8 +1908,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
         return result;
     }
 
-    private void parseCustomAction(String norm, JSONArray result, List<String> warnings, JSONArray library) {
-        if (norm == null || norm.trim().isEmpty()) return;
+    private void parseCustomAction(String command, JSONArray result, List<String> warnings, JSONArray library) {
+        if (command == null || command.trim().isEmpty()) return;
+        String rawCommand = command.trim();
+        String norm = normalizeArabicCommand(rawCommand);
         if (norm.contains("نهاية الشرط") || norm.contains("نهاية التكرار")) { warnings.add("استخدم علامة نهاية الشرط/التكرار في سطر مستقل: "+norm); return; }
         if ((norm.contains("حقل الادخال") || norm.contains("حقل البحث") || norm.contains("مكان الكتابة") || norm.contains("خانة البحث"))
                 && (norm.contains("انتظر") || norm.contains("استنى") || norm.contains("حتى يظهر") || norm.contains("ظهور"))) {
@@ -1707,16 +1933,39 @@ public class BotnaAccessibilityService extends AccessibilityService {
             if (message.isEmpty()) message = "تم تنفيذ الأمر بنجاح";
             JSONObject st=compiledStep(TYPE_NOTIFY,"تنبيه: "+message); putString(st,"message",message); putBoolean(st,"sound",true); result.put(st); return;
         }
+        if (norm.contains("افتح شريط الاشعارات") || norm.contains("افتح الاشعارات") || norm.contains("اسحب شريط الاشعارات") || norm.contains("نزل شريط الاشعارات")) { addGlobalActionToArray(result,"notifications","فتح لوحة الإشعارات"); return; }
+        if (norm.contains("الاعدادات السريعه") || norm.contains("الإعدادات السريعة") || norm.contains("افتح الاعدادات السريعه")) { addGlobalActionToArray(result,"quick_settings","فتح الإعدادات السريعة"); return; }
+        if (norm.contains("التطبيقات الاخيره") || norm.contains("التطبيقات الأخيرة") || norm.contains("افتح المهام الاخيره")) { addGlobalActionToArray(result,"recent_apps","فتح التطبيقات الأخيرة"); return; }
+        if (norm.contains("اغلق جميع النوافذ") || norm.contains("اغلق كل التطبيقات") || norm.contains("سكر التطبيقات") || norm.contains("اقفل كل التطبيقات")) { addCompiled(result,TYPE_CLOSE_RECENTS,"إغلاق التطبيقات الأخيرة الظاهرة"); return; }
+        if (norm.contains("اغلق الاشعارات") || norm.contains("سكر الاشعارات") || norm.contains("اخف الاشعارات") || norm.contains("اغلق شريط الاشعارات")) { addGlobalActionToArray(result,"dismiss_notifications","إغلاق لوحة الإشعارات"); return; }
+        if (norm.contains("امسح حقل") || norm.contains("امسح النص") || norm.contains("احذف النص المكتوب") || norm.contains("امسح البحث")) { addCompiled(result,TYPE_CLEAR_TEXT,"مسح حقل الإدخال المركّز"); return; }
+        java.util.regex.Matcher verifyText = java.util.regex.Pattern.compile("(?iu)^\\s*(?:تحقق من (?:ظهور|وجود)|تاكد من (?:ظهور|وجود)|تأكد من (?:ظهور|وجود)|افحص ظهور|تأكد ان|تاكد ان)\\s*(?:النص|كلمة|عبارة)?\\s*[:：]?\\s*[«\"']?(.*?)\\s*[»\"']?\\s*$").matcher(rawCommand);
+        if(verifyText.matches() && !verifyText.group(1).trim().isEmpty()) { String value=verifyText.group(1).trim(); JSONObject st=compiledStep(TYPE_WAIT_TEXT,"التحقق من ظهور النص: "+value);putString(st,"value",value);putInt(st,"attempts",1);putInt(st,"intervalMs",250);result.put(st);return; }
         if (norm.contains("اضغط انتر") || norm.contains("اضغط enter") || norm.contains("اضغط بحث") || norm.contains("نفذ البحث") || norm.contains("زر البحث")) { addCompiled(result,TYPE_PRESS_ENTER,"تنفيذ Enter/بحث"); return; }
-        java.util.regex.Matcher openUrl = java.util.regex.Pattern.compile("(?iu)^.*?(https?://\\S+).*$").matcher(norm);
+        if (norm.startsWith("ابحث عن ") || norm.startsWith("ابحثلي عن ") || norm.startsWith("دور على ") || norm.startsWith("دورلي على ") || norm.startsWith("فتش عن ") || norm.startsWith("دوّر على ")) {
+            String value = rawCommand.replaceFirst("(?iu)^\\s*(?:ابحثلي\\s+عن|ابحث\\s+عن|دورلي\\s+على|دور\\s+على|فتش\\s+عن|دوّر\\s+على)\\s*[:：]?\\s*", "").trim().replaceAll("[«»\"']", "");
+            if (value.isEmpty()) { warnings.add("أمر البحث لا يحتوي على عبارة بحث. أضف الكلمات التي تريد البحث عنها."); return; }
+            JSONObject clickSearch = compiledStep(TYPE_TEXT, "فتح/تحديد حقل البحث"); putString(clickSearch, "value", "بحث"); putInt(clickSearch, "retries", 2); result.put(clickSearch);
+            JSONObject waitInput = compiledStep(TYPE_WAIT_INPUT, "انتظار حقل البحث القابل للكتابة"); putInt(waitInput, "attempts", 20); putInt(waitInput, "intervalMs", 500); result.put(waitInput);
+            JSONObject typed = compiledStep(TYPE_TYPE_TEXT, "كتابة عبارة البحث: " + value); putString(typed, "value", value); result.put(typed);
+            addCompiled(result, TYPE_PRESS_ENTER, "تنفيذ البحث");
+            return;
+        }
+        java.util.regex.Matcher openUrl = java.util.regex.Pattern.compile("(?iu)^.*?(https?://\\S+).*$").matcher(rawCommand);
         if (openUrl.matches() && (norm.contains("افتح") || norm.contains("اذهب") || norm.contains("الرابط") || norm.contains("صفحة الراوتر"))) {
             String url=openUrl.group(1).replaceAll("[،,؛;.)]+$", ""); JSONObject st=compiledStep(TYPE_OPEN_URL,"فتح الرابط: "+url); putString(st,"url",url); result.put(st); return;
         }
-        if (norm.contains("انتظر") || norm.contains("انتظار") || norm.contains("توقف قليلا")) {
+        if ((norm.contains("انتظر حتى تنتهي اللعبة") || norm.contains("انتظر حتى تخلص اللعبة") || norm.contains("انتظر حتى ينتهي التحميل") || norm.contains("حتى يكتمل التحميل") || norm.contains("حتى تفتح اللعبة") || norm.contains("انتظر حتى تخلص") || norm.contains("لحد ما تفتح اللعبة") || norm.contains("لما تفتح اللعبة") || norm.contains("حتى يخلص تحميل") || norm.contains("حتى ينتهي تحميل") || norm.contains("حتى تكتمل اللعبة") || norm.contains("اكتمال تحميل اللعبة"))) {
+            int delay = 15000;
+            addCompiledInt(result,TYPE_WAIT,"انتظار تقديري لتحميل اللعبة (15 ثانية)","delay",delay);
+            warnings.add("تم وضع انتظار تقديري مدته 15 ثانية لأن اكتمال تحميل اللعبة لا يوفّر دائمًا علامة نصية يمكن للمحلل المحلي التحقق منها. لانتظار أدق، حدّد نصًا أو صورة تظهر عند اكتمال التحميل.");
+            return;
+        }
+        if (norm.contains("انتظر") || norm.contains("انتظار") || norm.contains("توقف قليلا") || norm.contains("استنى") || norm.contains("استنّى")) {
             int delay=parseDelayMs(norm);
             addCompiledInt(result,TYPE_WAIT,"انتظار "+delay+" ms","delay",delay); return;
         }
-        java.util.regex.Matcher openApp = java.util.regex.Pattern.compile("(?iu)^(?:افتح|شغّل|شغل|ادخل على|افتحلي|افتح لي|ابحث عن|دور على|دوّر على)\\s+(?:تطبيق\\s+)?(.+?)\\s*$").matcher(norm);
+        java.util.regex.Matcher openApp = java.util.regex.Pattern.compile("(?iu)^(?:افتح|شغّل|شغل|ادخل على|افتحلي|افتح لي|شغللي|شغل لي)\\s+(?:تطبيق\\s+)?(.+?)\\s*$").matcher(rawCommand);
         if (openApp.matches() && !norm.contains("الشاشة الرئيسية") && !norm.equals("افتح الرئيسية")) {
             String appName = openApp.group(1).trim();
             if (appName.isEmpty()) warnings.add("لم يُذكر اسم التطبيق المراد فتحه.");
@@ -1738,22 +1987,24 @@ public class BotnaAccessibilityService extends AccessibilityService {
             JSONObject st=compiledStep(TYPE_TAP,"نقر الموقع "+x+"%، "+y+"%"); putInt(st,"xPercent",x); putInt(st,"yPercent",y); result.put(st); return;
         }
         if (norm.contains("نقر نص") || norm.contains("اضغط النص") || norm.contains("انقر النص") || norm.contains("اضغط على نص") || norm.contains("انقر على النص")) {
-            String value=norm.replaceFirst("(?iu)^.*?(?:نقر نص|اضغط النص|انقر النص|اضغط على نص|انقر على النص)\\s*[:：]?\\s*","").replaceAll("[«»\"']","").trim();
+            String value=rawCommand.replaceFirst("(?iu)^.*?(?:نقر نص|اضغط النص|انقر النص|اضغط على نص|انقر على النص)\\s*[:：]?\\s*","").replaceAll("[«»\"']","").trim();
             if(value.isEmpty()) warnings.add("لم يُذكر النص المطلوب للنقر: "+norm);
             else { JSONObject st=compiledStep(TYPE_TEXT,"نقر نص: "+value); putString(st,"value",value); putInt(st,"retries",2); result.put(st); }
             return;
         }
         if (norm.startsWith("اكتب") || norm.startsWith("كتابة نص") || norm.startsWith("اكتب النص")) {
-            String value=norm.replaceFirst("(?iu)^(?:اكتب(?:\\s+النص)?|كتابة نص)\\s*[:：]?\\s*","").replaceAll("[«»\"']","").trim();
+            String value=rawCommand.replaceFirst("(?iu)^(?:اكتب(?:\\s+النص)?|كتابة نص)\\s*[:：]?\\s*","").replaceAll("[«»\"']","").trim();
             if(value.isEmpty()) warnings.add("لم يُذكر النص المراد كتابته: "+norm);
             else { JSONObject st=compiledStep(TYPE_TYPE_TEXT,"كتابة نص: "+value); putString(st,"value",value); result.put(st); }
             return;
         }
+        java.util.regex.Matcher swipe = java.util.regex.Pattern.compile("(?iu).*?(?:اسحب|حرك الشاشة|سحب)\\s+(?:من\\s*)?(\\d+)\\s*[,،]\\s*(\\d+)\\s+(?:الي|الى|لحد|لـ|ل)\\s*(\\d+)\\s*[,،]\\s*(\\d+).*?").matcher(norm);
+        if(swipe.matches()) { int x1=clampInt(parseIntSafe(swipe.group(1),50),0,100),y1=clampInt(parseIntSafe(swipe.group(2),75),0,100),x2=clampInt(parseIntSafe(swipe.group(3),50),0,100),y2=clampInt(parseIntSafe(swipe.group(4),25),0,100);JSONObject st=compiledStep(TYPE_SWIPE,"سحب من "+x1+"%, "+y1+"% إلى "+x2+"%, "+y2+"%");putInt(st,"x1",x1);putInt(st,"y1",y1);putInt(st,"x2",x2);putInt(st,"y2",y2);putInt(st,"duration",450);result.put(st);return; }
         if (norm.contains("مرر") || norm.contains("تمرير") || norm.contains("اسحب")) {
             String d=norm.contains("للاسفل")||norm.contains("للأسفل")||norm.contains("اسفل")?"down":norm.contains("لليمين")||norm.contains("يمين")?"right":norm.contains("لليسار")||norm.contains("يسار")?"left":"up";
             JSONObject st=compiledStep(TYPE_SCROLL,"تمرير "+d); putString(st,"direction",d); putInt(st,"duration",450); result.put(st); return;
         }
-        warnings.add("لم تُفهم العبارة بالكامل ولم تُنفّذ: «"+norm+"»");
+        warnings.add("تعذّر تحويل العبارة إلى أمر مدعوم بصورة موثوقة: «"+norm+"». لم تُنفّذ هذه العبارة؛ جرّب تحديد التطبيق أو النص أو العنصر المقصود بشكل أوضح.");
     }
 
     private int parseDelayMs(String norm) {
@@ -1920,6 +2171,20 @@ public class BotnaAccessibilityService extends AccessibilityService {
         } catch (Exception e) { report("تعذر نسخ الإحداثيات."); }
     }
 
+    private void configureFullScreenOverlay(WindowManager.LayoutParams params) {
+        if (params == null) return;
+        params.flags |= WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_FULLSCREEN;
+        if (Build.VERSION.SDK_INT >= 28) params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        if (Build.VERSION.SDK_INT >= 30) {
+            params.setFitInsetsTypes(0);
+            params.setFitInsetsSides(0);
+            params.setFitInsetsIgnoringVisibility(true);
+        }
+        params.gravity = Gravity.TOP | Gravity.START;
+    }
+
     private void openPointSelector(JSONObject step) {
         if (wm == null || step == null) return;
         activePointStepId = step.optString("id", "");
@@ -1930,7 +2195,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 -1, -1, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.TOP | Gravity.START;
+        configureFullScreenOverlay(params);
         try { wm.addView(selector, params); pointSelector = selector; }
         catch (Exception e) { pointSelector = null; showBubble(); showPanel(); report("تعذر فتح محدد نقطة النقر."); }
     }
@@ -2101,7 +2366,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 -1, -1, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
-        p.gravity = Gravity.TOP | Gravity.START;
+        configureFullScreenOverlay(p);
         try { wm.addView(cropSelector, p); }
         catch (Exception e) { cropSelector = null; replaceImageTarget = false; screenshot.recycle(); showBubble(); showPanel(); report("تعذر فتح أداة القص."); }
     }
@@ -2806,6 +3071,17 @@ public class BotnaAccessibilityService extends AccessibilityService {
             report(lastStepSuccess ? "تم إدخال النص في حقل الإدخال (إمكانية الوصول/اللصق)." : "تعذرت الكتابة: لا يوجد حقل قابل للتحرير مركّز. انقر حقل الإدخال أولًا."); scheduleAfterAction(generation, step);
         } else if (TYPE_PRESS_ENTER.equals(type)) {
             lastStepSuccess = performImeEnter(); report(lastStepSuccess ? "تم إرسال أمر Enter/بحث." : "تعذر إرسال Enter؛ قد لا يدعم التطبيق إجراء IME. جرّب النقر على زر البحث."); scheduleAfterAction(generation, step);
+        } else if (TYPE_CLEAR_TEXT.equals(type)) {
+            lastStepSuccess = clearFocusedField(); report(lastStepSuccess ? "تم مسح حقل الإدخال المركّز." : "تعذر مسح النص؛ لا يوجد حقل قابل للتحرير مركّز."); scheduleAfterAction(generation, step);
+        } else if (TYPE_GLOBAL_ACTION.equals(type)) {
+            lastStepSuccess = performSystemAction(step.optString("systemAction", "notifications"));
+            report(lastStepSuccess ? "نُفّذ إجراء النظام: " + step.optString("label", "") : "تعذر تنفيذ إجراء النظام؛ قد لا يدعمه إصدار أندرويد."); scheduleAfterAction(generation, step);
+        } else if (TYPE_CLOSE_RECENTS.equals(type)) {
+            closeRecentAppsAsync(ok -> {
+                lastStepSuccess = ok;
+                report(ok ? "تم إغلاق التطبيقات التي أتاح النظام زر إغلاقها." : "فُتحت التطبيقات الأخيرة، لكن لم يظهر زر إغلاق الكل قابل للتعرّف؛ لم تُغلق عناصر عشوائيًا.");
+                scheduleAfterAction(generation, step);
+            });
         } else if (TYPE_WAIT_TEXT.equals(type)) {
             waitForTextStep(step, generation, 0, Math.max(1, Math.min(720, step.optInt("attempts", 20))), Math.max(250, Math.min(60000, step.optInt("intervalMs", 500))));
         } else if (TYPE_WAIT_INPUT.equals(type)) {
@@ -2931,6 +3207,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 boolean ok=typeTextIntoFocusedField(step.optString("value","")); finishSingleStepTest(generation,ok?"نجح اختبار كتابة النص.":"فشل اختبار كتابة النص.");
             } else if (TYPE_PRESS_ENTER.equals(type)) {
                 boolean ok=performImeEnter(); finishSingleStepTest(generation,ok?"نجح اختبار Enter/بحث.":"تعذر تنفيذ Enter/بحث في هذا الحقل.");
+            } else if (TYPE_CLEAR_TEXT.equals(type)) {
+                boolean ok=clearFocusedField(); finishSingleStepTest(generation,ok?"نجح اختبار مسح النص.":"تعذر مسح النص في حقل مركّز.");
+            } else if (TYPE_GLOBAL_ACTION.equals(type)) {
+                boolean ok=performSystemAction(step.optString("systemAction","notifications")); finishSingleStepTest(generation,ok?"نجح اختبار إجراء النظام.":"فشل اختبار إجراء النظام.");
+            } else if (TYPE_CLOSE_RECENTS.equals(type)) {
+                closeRecentAppsAsync(ok -> finishSingleStepTest(generation,ok?"نجح اختبار إغلاق التطبيقات المتاحة من شاشة التطبيقات الأخيرة.":"فُتحت التطبيقات الأخيرة، لكن لم يتم العثور على زر إغلاق الكل."));
             } else if (TYPE_WAIT_TEXT.equals(type)) {
                 boolean found=containsTextOnScreen(step.optString("value","")); finishSingleStepTest(generation,found?"النص المنتظر ظاهر حاليًا.":"النص المنتظر غير ظاهر حاليًا.");
             } else if (TYPE_WAIT_INPUT.equals(type)) {
@@ -3523,6 +3805,17 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
     private LinearLayout.LayoutParams wrap() { return new LinearLayout.LayoutParams(-1,-2); }
     private int dp(float value) { return Math.round(value*getResources().getDisplayMetrics().density); }
+    private void hideBotnaOverlaysForCleanScreenshot() {
+        hidePanel();
+        removeView(bubble); bubble = null;
+        removeView(runControls); runControls = null; runControlsParams = null;
+        removeView(runStatusView); runStatusView = null; runStatusParams = null;
+        removeView(pointSelector); pointSelector = null;
+        removeView(cropSelector); cropSelector = null;
+    }
+
+    private void safeDismiss(AlertDialog dialog) { if (dialog != null) try { dialog.dismiss(); } catch (Exception ignored) { } }
+
     private void removeView(View view) { if(wm!=null&&view!=null)try{wm.removeView(view);}catch(Exception ignored){} }
     private void saveResult(String message) { String stamp=new java.text.SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(new java.util.Date()); getSharedPreferences(BotnaStore.PREFS,MODE_PRIVATE).edit().putString(BotnaStore.KEY_LAST_RESULT,stamp+" — "+message).apply(); }
     private String getLastResult() { return getSharedPreferences(BotnaStore.PREFS,MODE_PRIVATE).getString(BotnaStore.KEY_LAST_RESULT,"جاهز."); }
