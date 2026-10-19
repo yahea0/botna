@@ -119,7 +119,7 @@ public final class BotnaAICompiler {
 
     public static boolean isConfigured(Context context) {
         String id = providerId(context);
-        return !BotnaKeyVault.load(context, id).isEmpty() && !endpoint(context).trim().isEmpty() && !model(context).trim().isEmpty();
+        return BotnaKeyVault.count(context, id) > 0 && !endpoint(context).trim().isEmpty() && !model(context).trim().isEmpty();
     }
 
     public static void saveSettings(Context context, String key, String model, boolean clearKey) throws Exception {
@@ -135,7 +135,14 @@ public final class BotnaAICompiler {
             chosenEndpoint = defaultEndpoint(provider);
         }
         if (clearKey) BotnaKeyVault.save(context, provider, "");
-        else if (key != null && !key.trim().isEmpty()) BotnaKeyVault.save(context, provider, key.trim());
+        else {
+            List<String> additions = splitKeyLines(key);
+            if (!additions.isEmpty()) {
+                ArrayList<String> merged = BotnaKeyVault.loadAll(context, provider);
+                for (String candidate : additions) if (!merged.contains(candidate) && merged.size() < 20) merged.add(candidate);
+                BotnaKeyVault.saveAll(context, provider, merged);
+            }
+        }
         boolean ok = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(PROVIDER_KEY, provider)
                 .putString(MODEL_PREFIX + provider, chosenModel)
@@ -151,8 +158,8 @@ public final class BotnaAICompiler {
 
     public static JSONObject compile(Context context, String instructions, JSONArray library, Bitmap screenContext) throws Exception {
         String provider = providerId(context);
-        String apiKey = BotnaKeyVault.load(context, provider);
-        if (apiKey.isEmpty()) throw new IllegalStateException("لا يوجد مفتاح محفوظ لمزوّد " + providerLabel(provider) + ". افتح إعدادات الذكاء الاصطناعي.");
+        ArrayList<String> keys = BotnaKeyVault.loadAll(context, provider);
+        if (keys.isEmpty()) throw new IllegalStateException("لا يوجد مفتاح محفوظ لمزوّد " + providerLabel(provider) + ". افتح إعدادات الذكاء الاصطناعي وأضف مفتاحًا واحدًا على الأقل.");
         String model = model(context).trim();
         String endpoint = endpoint(context).trim();
         if (model.isEmpty() || endpoint.isEmpty()) throw new IllegalStateException("أدخل رابط API واسم النموذج لهذا المزوّد أولًا.");
@@ -160,16 +167,78 @@ public final class BotnaAICompiler {
         String userText = "مكتبة الصور المتاحة، أرقامها وأسماؤها (لا تختَر رقمًا خارجها): " + libraryForPrompt(library)
                 + "\n\nالأمر المكتوب باللهجة الفلسطينية المطلوب ترجمته إلى خطة تنفيذ دقيقة:\n" + (instructions == null ? "" : instructions.trim());
         String encodedImage = screenContext == null ? null : bitmapToJpegBase64(screenContext);
-        try {
-            return requestPlan(provider, endpoint, apiKey, model, userText, encodedImage);
-        } catch (Exception first) {
-            if (encodedImage == null || !looksLikeVisionCompatibilityError(first)) throw first;
-            JSONObject fallback = requestPlan(provider, endpoint, apiKey, model, userText, null);
-            JSONArray warnings = fallback.optJSONArray("warnings");
-            if (warnings == null) { warnings = new JSONArray(); fallback.put("warnings", warnings); }
-            warnings.put("المزوّد أو النموذج لم يقبل صورة الشاشة؛ تُرجمت التعليمات دون سياق بصري مباشر. جرّب نموذجًا يدعم الرؤية.");
-            return fallback;
+        int startIndex = BotnaKeyVault.activeIndex(context, provider, keys.size());
+        Exception lastFailure = null;
+        for (int attempt = 0; attempt < keys.size(); attempt++) {
+            int keyIndex = (startIndex + attempt) % keys.size();
+            String apiKey = keys.get(keyIndex);
+            try {
+                JSONObject plan;
+                try {
+                    plan = requestPlan(provider, endpoint, apiKey, model, userText, encodedImage);
+                } catch (Exception first) {
+                    if (encodedImage == null || !looksLikeVisionCompatibilityError(first)) throw first;
+                    plan = requestPlan(provider, endpoint, apiKey, model, userText, null);
+                    JSONArray warnings = plan.optJSONArray("warnings");
+                    if (warnings == null) { warnings = new JSONArray(); plan.put("warnings", warnings); }
+                    warnings.put("المزوّد أو النموذج لم يقبل صورة الشاشة؛ تُرجمت التعليمات دون سياق بصري مباشر. جرّب نموذجًا يدعم الرؤية.");
+                }
+                BotnaKeyVault.noteSuccessfulKey(context, provider, apiKey);
+                return plan;
+            } catch (Exception ex) {
+                lastFailure = ex;
+                if (!shouldRotateKey(ex)) throw ex;
+                BotnaKeyVault.setActiveIndex(context, provider, (keyIndex + 1) % keys.size());
+                if (attempt + 1 >= keys.size()) throw ex;
+            }
         }
+        if (lastFailure != null) throw lastFailure;
+        throw new IllegalStateException("لم ينجح أي مفتاح محفوظ لهذا المزوّد.");
+    }
+
+    /** Asks for exactly one next action from a live screen, enabling a screenshot-driven agent loop. */
+    public static JSONObject compileSmartNext(Context context, String goal, JSONArray history, Bitmap screenContext) throws Exception {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("وضع وكيل ذكي تفاعلي للمهمة التالية. اقرأ لقطة الشاشة الحالية، وقارنها بسجل الأفعال، ثم قرر خطوة واحدة فقط الآن.\n")
+                .append("المهمة الأصلية بالحرف: ").append(goal == null ? "" : goal.trim()).append("\n")
+                .append("سجل الأفعال السابقة بصيغة JSON: ").append(history == null ? "[]" : history.toString()).append("\n\n")
+                .append("أعد JSON بالشكل {\"task_done\":false,\"steps\":[{...فعل مدعوم واحد فقط...}],\"warnings\":[],\"reason\":\"سبب القرار المختصر بالعربية\"}. ")
+                .append("إذا اكتملت المهمة تمامًا أعد task_done=true وsteps=[] . إذا لم تكتمل أعد خطوة واحدة فقط من قائمة الأفعال المدعومة. لا تُعد خطة مستقبلية ولا أكثر من فعل في الرد. ")
+                .append("اعتمد على لقطة الشاشة الحالية لتحديد حالة التطبيق وعناصره، ولا تخترع عناصر أو نصوصًا غير ظاهرة. بعد كل فعل ستصل لقطة جديدة. ")
+                .append("لا تنفذ شراءً أو دفعًا أو حذف بيانات أو إرسال رسالة خارجية دون تأكيد صريح. إذا تعذر الاستنتاج بأمان فأعد steps=[] وtask_done=false مع تحذير يشرح ما يلزم توضيحه. ")
+                .append("المطلوب تحقيقه: ").append(goal == null ? "" : goal.trim());
+        JSONObject plan = compile(context, prompt.toString(), new JSONArray(), screenContext);
+        JSONArray steps = plan.optJSONArray("steps");
+        if (steps != null && steps.length() > 1) {
+            JSONObject first = steps.optJSONObject(0);
+            JSONArray one = new JSONArray();
+            if (first != null) one.put(first);
+            plan.put("steps", one);
+            JSONArray warnings = plan.optJSONArray("warnings");
+            if (warnings == null) { warnings = new JSONArray(); plan.put("warnings", warnings); }
+            warnings.put("تم الاقتصار على الإجراء الأول فقط لأن الوكيل يراجع لقطة شاشة جديدة بعد كل إجراء.");
+        }
+        return plan;
+    }
+
+    private static List<String> splitKeyLines(String text) {
+        ArrayList<String> result = new ArrayList<>();
+        if (text == null) return result;
+        for (String line : text.split("\\r?\\n")) {
+            String value = line == null ? "" : line.trim();
+            if (value.isEmpty() || value.matches("[-_—─]{3,}") || result.contains(value)) continue;
+            if (result.size() >= 20) break;
+            result.add(value);
+        }
+        return result;
+    }
+
+    private static boolean shouldRotateKey(Exception error) {
+        String message = String.valueOf(error == null ? "" : error.getMessage()).toLowerCase(Locale.ROOT);
+        return message.contains("http 429") || message.contains("http 401") || message.contains("http 403")
+                || message.contains("quota") || message.contains("rate limit") || message.contains("resource_exhausted")
+                || message.contains("insufficient_quota") || message.contains("billing") || message.contains("exceeded your")
+                || message.contains("invalid api key") || message.contains("unauthorized") || message.contains("too many requests");
     }
 
     private static JSONObject requestPlan(String provider, String endpoint, String apiKey, String model, String userText, String imageBase64) throws Exception {
@@ -542,9 +611,33 @@ public final class BotnaAICompiler {
         modelButtonLp.leftMargin = Math.max(4, pad / 3); modelRow.addView(modelPicker, modelButtonLp);
         LinearLayout.LayoutParams modelLp = new LinearLayout.LayoutParams(-1, -2); modelLp.topMargin = pad / 3; container.addView(modelRow, modelLp);
 
-        EditText key = new EditText(context); key.setSingleLine(true); key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        key.setHint("مفتاح API لهذا المزوّد — اتركه فارغًا للاحتفاظ بالمحفوظ"); styleInput(context, key, pad);
+        EditText key = new EditText(context); key.setSingleLine(false); key.setMinLines(2); key.setMaxLines(5);
+        key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setGravity(Gravity.TOP | Gravity.START);
+        key.setHint("أضف مفاتيح API جديدة — كل مفتاح في سطر مستقل. اتركه فارغًا للاحتفاظ بالمحفوظ"); styleInput(context, key, pad);
         LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(-1, -2); keyLp.topMargin = pad / 3; container.addView(key, keyLp);
+        TextView keyCount = new TextView(context); keyCount.setTextColor(MUTED); keyCount.setTextSize(11); keyCount.setGravity(Gravity.RIGHT);
+        LinearLayout.LayoutParams keyCountLp = new LinearLayout.LayoutParams(-1, -2); keyCountLp.topMargin = pad / 5; container.addView(keyCount, keyCountLp);
+        LinearLayout keyPreview = new LinearLayout(context); keyPreview.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams keyPreviewLp = new LinearLayout.LayoutParams(-1, -2); keyPreviewLp.topMargin = pad / 5; container.addView(keyPreview, keyPreviewLp);
+        Runnable refreshKeyPreview = () -> {
+            keyPreview.removeAllViews();
+            List<String> lines = splitKeyLines(key.getText().toString());
+            for (int i = 0; i < lines.size(); i++) {
+                TextView item = new TextView(context); item.setText("مفتاح جديد " + (i + 1) + " • سيُحفظ مشفّرًا");
+                item.setTextColor(TEXT); item.setTextSize(11); item.setPadding(pad / 2, pad / 5, pad / 2, pad / 5);
+                item.setBackground(shape(context, Color.argb(95, 35, 226, 244), CYAN)); keyPreview.addView(item, new LinearLayout.LayoutParams(-1, -2));
+                if (i + 1 < lines.size()) { View divider = new View(context); divider.setBackgroundColor(Color.argb(150, 35, 226, 244));
+                    LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(-1, Math.max(1, pad / 12)); dividerLp.topMargin = pad / 5; dividerLp.bottomMargin = pad / 5; keyPreview.addView(divider, dividerLp); }
+            }
+            int saved = BotnaKeyVault.count(context, providerSpinner.getSelectedItemPosition() >= 0 && providerSpinner.getSelectedItemPosition() < ids.length ? ids[providerSpinner.getSelectedItemPosition()] : PROVIDER_GEMINI);
+            keyCount.setText("المفاتيح المحفوظة لهذا المزوّد: " + saved + " • مفاتيح جديدة في الحقل: " + lines.size() + " • الحد الأقصى 20");
+        };
+        key.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { refreshKeyPreview.run(); }
+            @Override public void afterTextChanged(android.text.Editable e) { }
+        });
 
         TextView help = new TextView(context); help.setTextColor(MUTED); help.setTextSize(12); help.setGravity(Gravity.RIGHT);
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2); helpLp.topMargin = pad / 3; container.addView(help, helpLp);
@@ -575,7 +668,9 @@ public final class BotnaAICompiler {
             endpoint.setText(draft == null ? savedOrDefault(context, ENDPOINT_PREFIX + id, defaultEndpoint(id)) : draft[0]);
             model.setText(draft == null ? savedOrDefault(context, MODEL_PREFIX + id, defaultModel(id)) : draft[1]);
             key.setText(draft == null ? "" : draft[2]);
-            status.setText(BotnaKeyVault.hasKey(context, id) ? "✓ يوجد مفتاح محفوظ ومشفّر لهذا المزوّد." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.");
+            int savedKeyCount = BotnaKeyVault.count(context, id);
+            status.setText(savedKeyCount > 0 ? "✓ يوجد " + savedKeyCount + " مفتاح/مفاتيح محفوظة ومشفّرة؛ سيبدّل التطبيق بينها تلقائيًا عند نفاد الحصة أو رفض المفتاح." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.");
+            refreshKeyPreview.run();
             if (PROVIDER_GITHUB_MODELS.equals(id)) {
                 help.setText("GitHub Models: أدخل GitHub token صالحًا واسم نموذج متاحًا لحسابك. الحصة المجانية وحدود النماذج تتغير حسب شروط GitHub.");
             } else if (PROVIDER_DEEPSEEK.equals(id)) {
@@ -633,8 +728,8 @@ public final class BotnaAICompiler {
             String[] data = drafts.get(selectedProvider);
             if (data == null) data = new String[]{endpoint.getText().toString(), model.getText().toString(), key.getText().toString()};
             final String selectedEndpoint = data[0] == null ? "" : data[0].trim();
-            String typedKey = data[2] == null ? "" : data[2].trim();
-            final String selectedKey = typedKey.isEmpty() ? BotnaKeyVault.load(context, selectedProvider) : typedKey;
+            List<String> typedKeys = splitKeyLines(data[2]);
+            final String selectedKey = typedKeys.isEmpty() ? BotnaKeyVault.load(context, selectedProvider) : typedKeys.get(0);
             if (selectedEndpoint.isEmpty() || selectedKey.isEmpty()) {
                 status.setText("أدخل رابط API ومفتاح هذا المزود قبل جلب النماذج."); return;
             }
@@ -679,8 +774,8 @@ public final class BotnaAICompiler {
             if (data == null) data = new String[]{endpoint.getText().toString(), model.getText().toString(), key.getText().toString()};
             final String testEndpoint = data[0] == null ? "" : data[0].trim();
             final String testModel = data[1] == null ? "" : data[1].trim();
-            String providedKey = data[2] == null ? "" : data[2].trim();
-            final String testKey = providedKey.isEmpty() ? BotnaKeyVault.load(context, selected) : providedKey;
+            List<String> providedKeys = splitKeyLines(data[2]);
+            final String testKey = providedKeys.isEmpty() ? BotnaKeyVault.load(context, selected) : providedKeys.get(0);
             if (testEndpoint.isEmpty() || testModel.isEmpty() || testKey.isEmpty()) {
                 status.setText("أدخل رابط API والنموذج والمفتاح أو احفظ مفتاحًا لهذا المزوّد أولًا.");
                 return;
@@ -705,7 +800,7 @@ public final class BotnaAICompiler {
 
         AlertDialog dialog = new AlertDialog.Builder(context).setTitle("مركز إعدادات مزوّدي الذكاء الاصطناعي")
                 .setView(container).setPositiveButton("حفظ الإعدادات", null)
-                .setNeutralButton("مسح مفتاح هذا المزوّد", null).setNegativeButton("إغلاق", null).create();
+                .setNeutralButton("مسح جميع مفاتيح هذا المزوّد", null).setNegativeButton("إغلاق", null).create();
         try {
             if (dialog.getWindow() != null && accessibilityOverlay) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
             dialog.show();
@@ -730,13 +825,13 @@ public final class BotnaAICompiler {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
                 int index = providerSpinner.getSelectedItemPosition(); if (index < 0 || index >= ids.length) return;
                 String selected = ids[index];
-                AlertDialog confirm = new AlertDialog.Builder(context).setTitle("مسح مفتاح المزوّد")
-                        .setMessage("سيُحذف المفتاح المشفّر المحفوظ لهذا المزوّد فقط، ولن تتأثر مفاتيح المزوّدين الآخرين. متابعة؟")
-                        .setPositiveButton("مسح المفتاح", (d, w) -> {
+                AlertDialog confirm = new AlertDialog.Builder(context).setTitle("مسح مفاتيح المزوّد")
+                        .setMessage("سيُحذف جميع مفاتيح هذا المزوّد المشفّرة فقط، ولن تتأثر مفاتيح المزوّدين الآخرين. لا يمكن التراجع عن الحذف. متابعة؟")
+                        .setPositiveButton("مسح جميع المفاتيح", (d, w) -> {
                             try {
                                 BotnaKeyVault.save(context, selected, "");
-                                status.setText("تم حذف مفتاح هذا المزوّد."); key.setText("");
-                                Toast.makeText(context, "تم مسح المفتاح المحفوظ لهذا المزوّد.", Toast.LENGTH_SHORT).show();
+                                status.setText("تم حذف جميع مفاتيح هذا المزوّد."); key.setText(""); drafts.put(selected, new String[]{endpoint.getText().toString(), model.getText().toString(), ""}); refreshKeyPreview.run();
+                                Toast.makeText(context, "تم مسح جميع مفاتيح هذا المزوّد.", Toast.LENGTH_SHORT).show();
                                 if (onSaved != null) onSaved.run();
                             } catch (Exception e) { Toast.makeText(context, "تعذر مسح المفتاح.", Toast.LENGTH_LONG).show(); }
                         }).setNegativeButton("إلغاء", null).create();
