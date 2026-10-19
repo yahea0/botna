@@ -86,6 +86,29 @@ public final class BotnaStore {
         }
     }
 
+    /** Rename a saved script without changing its ID or step definitions. */
+    public static synchronized boolean renameScript(Context context, String id, String requestedName) {
+        if (context == null || id == null || id.trim().isEmpty()) return false;
+        String name = requestedName == null ? "" : requestedName.trim();
+        if (name.isEmpty()) return false;
+
+        JSONArray all = scripts(context);
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject item = all.optJSONObject(i);
+            if (item == null || !id.equals(item.optString("id", ""))) continue;
+            try {
+                item.put("name", name);
+                item.put("updated", System.currentTimeMillis());
+                all.put(i, item);
+            } catch (JSONException e) {
+                return false;
+            }
+            // Return the actual persistent write result so the UI can report failures accurately.
+            return prefs(context).edit().putString(KEY_SCRIPTS, all.toString()).commit();
+        }
+        return false;
+    }
+
     public static JSONObject getScript(
             Context context,
             String id
