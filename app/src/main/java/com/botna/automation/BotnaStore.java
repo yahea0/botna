@@ -71,6 +71,21 @@ public final class BotnaStore {
                 .commit();
     }
 
+    public static synchronized void deleteScript(Context context, String id) {
+        if (id == null || id.trim().isEmpty()) return;
+        JSONArray old = scripts(context);
+        JSONArray next = new JSONArray();
+        for (int i = 0; i < old.length(); i++) {
+            JSONObject item = old.optJSONObject(i);
+            if (item == null || id.equals(item.optString("id"))) continue;
+            next.put(item);
+        }
+        saveScripts(context, next);
+        if (id.equals(activeId(context))) {
+            setActiveId(context, next.length() > 0 ? next.optJSONObject(0).optString("id", "") : "");
+        }
+    }
+
     public static JSONObject getScript(
             Context context,
             String id
