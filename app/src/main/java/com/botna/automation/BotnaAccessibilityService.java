@@ -70,7 +70,10 @@ import java.util.concurrent.Executors;
 
 public class BotnaAccessibilityService extends AccessibilityService {
     public static final String ACTION_START_SMART_TASK = "com.botna.automation.START_SMART_TASK";
+    public static final String ACTION_OPEN_AGENT_SCRIPT = "com.botna.automation.OPEN_AGENT_SCRIPT";
+    public static final String ACTION_RUN_AGENT_SCRIPT = "com.botna.automation.RUN_AGENT_SCRIPT";
     public static final String PREF_PENDING_SMART_TASK = "pending_smart_task_v1";
+    public static final String PREF_PENDING_SMART_TASK_ID = "pending_smart_task_id_v1";
     private static final int SMART_TASK_MAX_ACTIONS = 40;
     private static final int BG = Color.rgb(5, 7, 12);
     private static final int GLASS = Color.argb(242, 13, 17, 26);
@@ -164,6 +167,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private boolean smartTaskActive;
     private boolean smartTaskReceiverRegistered;
     private String smartTaskGoal = "";
+    private String smartTaskId = "";
     private String smartCurrentActionLabel = "";
     private JSONArray smartTaskHistory = new JSONArray();
     private int smartTaskActionCount;
@@ -177,9 +181,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
         showBubble();
         saveResult("Botna جاهز. اضغط B لفتح لوحة الأتمتة.");
         String pending = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).getString(PREF_PENDING_SMART_TASK, "");
+        String pendingId = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).getString(PREF_PENDING_SMART_TASK_ID, "");
         if (pending != null && !pending.trim().isEmpty()) {
-            getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit().remove(PREF_PENDING_SMART_TASK).apply();
-            handler.postDelayed(() -> startSmartTask(pending), 500);
+            getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit().remove(PREF_PENDING_SMART_TASK).remove(PREF_PENDING_SMART_TASK_ID).apply();
+            final String taskId = pendingId == null ? "" : pendingId;
+            handler.postDelayed(() -> startSmartTask(pending, taskId), 500);
         }
     }
 
@@ -187,14 +193,32 @@ public class BotnaAccessibilityService extends AccessibilityService {
         if (smartTaskReceiverRegistered) return;
         smartTaskReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context context, Intent intent) {
-                String task = intent == null ? "" : intent.getStringExtra("task");
+                if (intent == null) return;
+                String action = intent.getAction();
+                if (ACTION_OPEN_AGENT_SCRIPT.equals(action)) {
+                    String scriptId = intent.getStringExtra("scriptId");
+                    handler.post(() -> openAgentScript(scriptId, false));
+                    return;
+                }
+                if (ACTION_RUN_AGENT_SCRIPT.equals(action)) {
+                    String scriptId = intent.getStringExtra("scriptId");
+                    handler.post(() -> openAgentScript(scriptId, true));
+                    return;
+                }
+                String task = intent.getStringExtra("task");
+                String taskId = intent.getStringExtra("agentTaskId");
                 if (task == null || task.trim().isEmpty()) task = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).getString(PREF_PENDING_SMART_TASK, "");
-                getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit().remove(PREF_PENDING_SMART_TASK).apply();
+                if (taskId == null || taskId.trim().isEmpty()) taskId = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).getString(PREF_PENDING_SMART_TASK_ID, "");
+                getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit().remove(PREF_PENDING_SMART_TASK).remove(PREF_PENDING_SMART_TASK_ID).apply();
                 final String requested = task == null ? "" : task.trim();
-                if (!requested.isEmpty()) handler.post(() -> startSmartTask(requested));
+                final String requestedId = taskId == null ? "" : taskId.trim();
+                if (!requested.isEmpty()) handler.post(() -> startSmartTask(requested, requestedId));
             }
         };
-        IntentFilter filter = new IntentFilter(ACTION_START_SMART_TASK);
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_START_SMART_TASK);
+        filter.addAction(ACTION_OPEN_AGENT_SCRIPT);
+        filter.addAction(ACTION_RUN_AGENT_SCRIPT);
         try {
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(smartTaskReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
             else registerReceiver(smartTaskReceiver, filter);
@@ -202,10 +226,31 @@ public class BotnaAccessibilityService extends AccessibilityService {
         } catch (Exception ignored) { smartTaskReceiverRegistered = false; }
     }
 
+    private void openAgentScript(String scriptId, boolean runNow) {
+        if (scriptId == null || scriptId.trim().isEmpty()) { report("لا يوجد سكربت مرتبط بهذه المهمة."); return; }
+        if (running || singleStepTesting || smartTaskActive) { report("أوقف التنفيذ الحالي قبل فتح سكربت وكيل آخر."); return; }
+        JSONObject script = BotnaStore.getScript(this, scriptId);
+        if (script == null) { report("تعذر العثور على السكربت المحفوظ لهذه المهمة."); return; }
+        BotnaStore.setActiveId(this, scriptId);
+        currentScriptId = scriptId;
+        hidePanel();
+        showBubble();
+        if (runNow) runActiveScript();
+        else {
+            showPanel();
+            report("فُتح سكربت الوكيل للتعديل: " + script.optString("name", "مهمة ذكية") + ".");
+        }
+    }
+
     @Override public void onAccessibilityEvent(AccessibilityEvent event) { }
     @Override public void onInterrupt() { saveResult("تمت مقاطعة الخدمة."); }
 
     @Override public void onDestroy() {
+        if (smartTaskActive && smartTaskId != null && !smartTaskId.isEmpty()) {
+            String reason = "انقطعت خدمة إمكانية الوصول أثناء تنفيذ المهمة؛ أُبقيت الخطوات والرسائل المحفوظة للمراجعة.";
+            BotnaAgentStore.setStatus(this, smartTaskId, "انقطعت الخدمة", reason);
+            BotnaAgentStore.addMessage(this, smartTaskId, "system", "انقطعت خدمة بوتنا", reason, smartTaskActionCount, false);
+        }
         if (smartTaskReceiverRegistered && smartTaskReceiver != null) {
             try { unregisterReceiver(smartTaskReceiver); } catch (Exception ignored) { }
             smartTaskReceiverRegistered = false;
@@ -2849,7 +2894,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void stopScript() {
         if (!running && !singleStepTesting && !smartTaskActive) { report("لا يوجد تنفيذ لإيقافه."); return; }
-        smartTaskActive = false; smartTaskGoal = ""; smartCurrentActionLabel = ""; smartTaskHistory = new JSONArray(); smartTaskActionCount = 0;
+        if (smartTaskActive) { endSmartTask("أوقف المستخدم الوكيل يدويًا. يمكن مراجعة الرسائل والسكربت الجزئي المحفوظ.", false); return; }
+        smartTaskActive = false; smartTaskGoal = ""; smartTaskId = ""; smartCurrentActionLabel = ""; smartTaskHistory = new JSONArray(); smartTaskActionCount = 0;
         removeView(smartPlanningControls); smartPlanningControls = null;
         executionGeneration++;
         running = false; paused = false; executionInFlight = false;
@@ -3250,6 +3296,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
             smartTaskActionCount++;
             smartCurrentActionLabel = "";
             report("الوكيل: " + (actionSucceeded ? "اكتمل الإجراء " : "فشل الإجراء ") + smartTaskActionCount + "/" + SMART_TASK_MAX_ACTIONS + " — سيعيد قراءة الشاشة ويقرر الخطوة التالية.");
+            BotnaAgentStore.addMessage(this, smartTaskId, "assistant", (actionSucceeded ? "نجح الإجراء " : "فشل الإجراء ") + smartTaskActionCount + ": " + actionLabel,
+                    message + "\nسيعيد الوكيل قراءة الشاشة قبل تحديد الخطوة التالية.", smartTaskActionCount, actionSucceeded);
             if (!actionSucceeded) BotnaLogStore.add(this, "smart_agent", currentStepIndex, actionLabel,
                     "فشل إجراء داخل البوت الذكي.", message + "\nالمهمة: " + smartTaskGoal, null);
             if (smartTaskActionCount >= SMART_TASK_MAX_ACTIONS) {
@@ -3977,24 +4025,42 @@ public class BotnaAccessibilityService extends AccessibilityService {
         catch (Exception e) { smartPlanningControls = null; report("تعذر إظهار زر إيقاف الوكيل أثناء التحليل."); }
     }
 
-    private void startSmartTask(String task) {
+    private void startSmartTask(String task) { startSmartTask(task, ""); }
+
+    private void startSmartTask(String task, String requestedTaskId) {
         String requested = task == null ? "" : task.trim();
         if (requested.isEmpty()) return;
         if (running || singleStepTesting || smartTaskActive) {
-            report("هناك تنفيذ جارٍ بالفعل. أوقفه قبل بدء بوت ذكي جديد.");
+            String reason = "هناك تنفيذ جارٍ بالفعل. أوقفه قبل بدء بوت ذكي جديد.";
+            report(reason);
             BotnaLogStore.add(this, "smart_agent", -1, "بدء المهمة", "لم تبدأ المهمة الجديدة لأن تنفيذًا آخر ما زال جاريًا.", requested, null);
+            if (requestedTaskId != null && !requestedTaskId.isEmpty()) BotnaAgentStore.addMessage(this, requestedTaskId, "assistant", "لم تبدأ المهمة", reason, -1, false);
             return;
         }
         if (!BotnaAICompiler.isConfigured(this)) {
-            report("لا يمكن بدء البوت الذكي دون مزوّد API ومفتاح محفوظ. تم حفظ نص المهمة في السجل.");
+            String reason = "لا يمكن بدء البوت الذكي دون مزوّد API ومفتاح محفوظ.";
+            report(reason);
             BotnaLogStore.add(this, "smart_agent", -1, "بدء المهمة", "لا يوجد مزود AI مضبوط.", requested, null);
+            if (requestedTaskId != null && !requestedTaskId.isEmpty()) {
+                BotnaAgentStore.setStatus(this, requestedTaskId, "لم تبدأ", reason);
+                BotnaAgentStore.addMessage(this, requestedTaskId, "assistant", "لم تبدأ المهمة", reason, -1, false);
+            }
             return;
         }
-        JSONObject script = ensureScript(); currentScriptId = script == null ? "" : script.optString("id", "");
+        smartTaskId = requestedTaskId == null ? "" : requestedTaskId.trim();
+        JSONObject savedAgentTask = BotnaAgentStore.getTask(this, smartTaskId);
+        if (savedAgentTask == null) smartTaskId = BotnaAgentStore.createTask(this, requested);
+        else if (!requested.equals(savedAgentTask.optString("goal", "")))
+            BotnaAgentStore.updateGoal(this, smartTaskId, savedAgentTask.optString("name", ""), requested);
+        currentScriptId = BotnaAgentStore.prepareRun(this, smartTaskId);
+        if (!currentScriptId.isEmpty()) BotnaStore.setActiveId(this, currentScriptId);
+        JSONObject script = ensureScript(); currentScriptId = script == null ? currentScriptId : script.optString("id", currentScriptId);
         smartTaskGoal = requested; smartTaskHistory = new JSONArray(); smartTaskActionCount = 0;
         smartCurrentActionLabel = ""; smartTaskActive = true;
         panelWasVisibleAtRunStart = panelVisible;
         report("بدأ البوت الذكي. سيحلل لقطة شاشة بعد كل إجراء (حد أقصى " + SMART_TASK_MAX_ACTIONS + " إجراءً).");
+        BotnaAgentStore.setStatus(this, smartTaskId, "قيد التنفيذ", "بدأ الوكيل المهمة.");
+        BotnaAgentStore.addMessage(this, smartTaskId, "assistant", "بدأ الوكيل المهمة", "الهدف: " + requested + "\nسيحلل لقطة شاشة بعد كل إجراء، ويسجل الأفعال في سكربت مستقل.", 0, true);
         BotnaLogStore.add(this, "smart_agent", -1, "بدء المهمة", "بدأ تنفيذ مهمة تفاعلية متتابعة.", requested, null);
         requestSmartNextStep();
     }
@@ -4011,6 +4077,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 String detail = "تعذر أخذ لقطة شاشة جديدة بعد الإجراء رقم " + smartTaskActionCount + ": " + screenshotError;
                 BotnaLogStore.add(this, "smart_agent", smartTaskActionCount, smartCurrentActionLabel,
                         "توقف الوكيل لأن لقطة الشاشة غير متاحة.", detail, null);
+                BotnaAgentStore.addMessage(this, smartTaskId, "assistant", "تعذر التقاط الشاشة", detail, smartTaskActionCount, false);
                 endSmartTask(detail, false); return;
             }
             final Bitmap currentScreen = screen;
@@ -4024,6 +4091,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     JSONObject plan = null; String error = null; JSONArray executable = new JSONArray();
                     try {
                         plan = BotnaAICompiler.compileSmartNext(this, goal, history, currentScreen);
+                        String decisionReason = plan.optString("reason", "لم يقدم النموذج سببًا نصيًا للقرار.");
+                        JSONArray decisionWarnings = plan.optJSONArray("warnings");
+                        BotnaAgentStore.addMessage(this, smartTaskId, "assistant", "تحليل الشاشة وسبب القرار",
+                                decisionReason + (decisionWarnings == null || decisionWarnings.length() == 0 ? "" : "\nالتحذيرات: " + decisionWarnings.toString()),
+                                smartTaskActionCount, true);
                         JSONArray proposed = plan.optJSONArray("steps");
                         if (proposed != null && proposed.length() > 0) {
                             JSONObject firstOnly = proposed.optJSONObject(0);
@@ -4060,6 +4132,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                             BotnaLogStore.add(this, "smart_agent", smartTaskActionCount, "تخطيط الخطوة التالية",
                                     "لم يستطع الوكيل اختيار إجراء قابل للتنفيذ بأمان.", reason + "\nالمهمة: " + smartTaskGoal,
                                     BotnaLogStore.screenshotsEnabled(this) ? currentScreen : null);
+                            BotnaAgentStore.addMessage(this, smartTaskId, "assistant", "توقّف التخطيط بسبب خطأ", reason + "\nالمهمة: " + smartTaskGoal, smartTaskActionCount, false);
                             if (!currentScreen.isRecycled()) currentScreen.recycle();
                             endSmartTask("توقف الوكيل بدل التخمين: " + reason, false); return;
                         }
@@ -4067,7 +4140,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
                         if (next == null) { if (!currentScreen.isRecycled()) currentScreen.recycle(); endSmartTask("أعاد المترجم إجراءً فارغًا.", false); return; }
                         if (!currentScreen.isRecycled()) currentScreen.recycle();
                         smartCurrentActionLabel = next.optString("label", next.optString("type", "إجراء"));
-                        currentScriptId = ensureScript().optString("id", "");
+                        BotnaAgentStore.appendStep(this, smartTaskId, next);
+                        String decisionReason = finalPlan == null ? "" : finalPlan.optString("reason", "");
+                        BotnaAgentStore.addMessage(this, smartTaskId, "assistant", "الإجراء التالي: " + smartCurrentActionLabel,
+                                (decisionReason.isEmpty() ? "اختير هذا الإجراء بناءً على لقطة الشاشة الحالية." : decisionReason)
+                                        + "\nتعريف الإجراء المحفوظ للتعديل: " + next.toString(), smartTaskActionCount + 1, true);
+                        currentScriptId = BotnaAgentStore.scriptId(this, smartTaskId);
+                        if (!currentScriptId.isEmpty()) BotnaStore.setActiveId(this, currentScriptId);
                         executionSteps = new JSONArray().put(next);
                         currentStepIndex = 0; currentBranches.clear(); currentLoops.clear();
                         lastStepSuccess = true; executionGeneration++; running = true; paused = false; executionInFlight = false;
@@ -4089,9 +4168,15 @@ public class BotnaAccessibilityService extends AccessibilityService {
         removeView(smartPlanningControls); smartPlanningControls = null;
         executionGeneration++; currentBranches.clear(); currentLoops.clear(); executionSteps = new JSONArray();
         removeView(runControls); runControls = null; removeView(runStatusView); runStatusView = null; runStatusParams = null;
-        if (wasSmart) BotnaLogStore.add(this, "smart_agent", smartTaskActionCount, "إنهاء المهمة",
-                reportedComplete ? "اعتُبرت المهمة مكتملة من الوكيل." : "توقفت المهمة قبل اكتمالها.", message + "\nالهدف: " + smartTaskGoal, null);
-        smartTaskGoal = ""; smartCurrentActionLabel = ""; smartTaskHistory = new JSONArray(); smartTaskActionCount = 0;
+        if (wasSmart) {
+            String finalStatus = reportedComplete ? "مكتملة" : "توقفت/فشلت";
+            BotnaLogStore.add(this, "smart_agent", smartTaskActionCount, "إنهاء المهمة",
+                    reportedComplete ? "اعتُبرت المهمة مكتملة من الوكيل." : "توقفت المهمة قبل اكتمالها.", message + "\nالهدف: " + smartTaskGoal, null);
+            BotnaAgentStore.setStatus(this, smartTaskId, finalStatus, message);
+            BotnaAgentStore.addMessage(this, smartTaskId, "assistant", reportedComplete ? "انتهت المهمة" : "توقفت المهمة",
+                    message + "\nالهدف: " + smartTaskGoal + "\nعدد الإجراءات: " + smartTaskActionCount, smartTaskActionCount, reportedComplete);
+        }
+        smartTaskGoal = ""; smartTaskId = ""; smartCurrentActionLabel = ""; smartTaskHistory = new JSONArray(); smartTaskActionCount = 0;
         report((reportedComplete ? "انتهت مهمة البوت الذكي: " : "توقف البوت الذكي: ") + message);
         showBubble(); if (panelWasVisibleAtRunStart) showPanel();
     }
