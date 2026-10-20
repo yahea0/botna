@@ -685,23 +685,24 @@ public final class BotnaAICompiler {
                 PROVIDER_OPENAI_RESPONSES, PROVIDER_ANTHROPIC, PROVIDER_GEMINI,
                 PROVIDER_CUSTOM, PROVIDER_OPENAI_COMPAT, PROVIDER_COPILOT_BRIDGE };
         final String[] labels = {
-                "DeepSeek API — مستقل",
-                "OpenRouter API — مستقل",
-                "Groq API — مستقل",
+                BotnaI18n.translate(context, "DeepSeek API — مستقل"),
+                BotnaI18n.translate(context, "OpenRouter API — مستقل"),
+                BotnaI18n.translate(context, "Groq API — مستقل"),
                 "OpenAI Responses API",
                 "Anthropic Messages API",
                 "Google Gemini API",
-                "رابط مخصص متوافق مع Chat Completions",
-                "مزود متوافق قديم/مخصص",
-                "GitHub Copilot عبر جسر خارجي (ليس مفتاح API عاديًا)"
+                BotnaI18n.translate(context, "رابط مخصص متوافق مع Chat Completions"),
+                BotnaI18n.translate(context, "مزود متوافق قديم/مخصص"),
+                BotnaI18n.translate(context, "GitHub Copilot عبر جسر خارجي (ليس مفتاح API عاديًا)")
         };
         LinearLayout container = new LinearLayout(context);
         container.setOrientation(LinearLayout.VERTICAL);
         int pad = Math.round(14 * context.getResources().getDisplayMetrics().density);
         container.setPadding(pad, pad, pad, pad);
+        BotnaI18n.applyDirection(context, container);
         TextView intro = new TextView(context);
-        intro.setText("اختر مزودًا واحدًا مستقلًا؛ لكل مزود رابط ونموذج ومفتاح منفصل. زر «روابط» يعرض العناوين المعروفة، وزر «النماذج» يجلب المعرفات من API عند توفر اتصال ومفتاح صالح. أسماء النماذج وتوفرها يتغيران حسب حساب المزود.");
-        intro.setTextColor(MUTED); intro.setTextSize(12); intro.setGravity(Gravity.RIGHT);
+        intro.setText(BotnaI18n.translate(context, "اختر مزودًا واحدًا مستقلًا؛ لكل مزود رابط ونموذج ومفتاح منفصل. زر «روابط» يعرض العناوين المعروفة، وزر «النماذج» يجلب المعرفات من API عند توفر اتصال ومفتاح صالح. أسماء النماذج وتوفرها يتغيران حسب حساب المزود."));
+        intro.setTextColor(MUTED); intro.setTextSize(12); intro.setGravity(BotnaI18n.isEnglish(context) ? Gravity.LEFT : Gravity.RIGHT);
         container.addView(intro, new LinearLayout.LayoutParams(-1, -2));
 
         Spinner providerSpinner = new Spinner(context);
@@ -711,11 +712,11 @@ public final class BotnaAICompiler {
         LinearLayout.LayoutParams spinnerLp = new LinearLayout.LayoutParams(-1, -2); spinnerLp.topMargin = pad / 2;
         container.addView(providerSpinner, spinnerLp);
 
-        TextView status = new TextView(context); status.setTextColor(MUTED); status.setTextSize(12); status.setGravity(Gravity.RIGHT);
+        TextView status = new TextView(context); status.setTextColor(MUTED); status.setTextSize(12); status.setGravity(BotnaI18n.isEnglish(context) ? Gravity.LEFT : Gravity.RIGHT); BotnaI18n.applyDirection(context, status);
         LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(-1, -2); statusLp.topMargin = pad / 3; container.addView(status, statusLp);
 
         EditText endpoint = new EditText(context); endpoint.setSingleLine(true); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        endpoint.setHint("رابط API الكامل أو عنوان الجذر لـ Gemini"); styleInput(context, endpoint, pad);
+        endpoint.setHint(BotnaI18n.translate(context, "رابط API الكامل أو عنوان الجذر لـ Gemini")); styleInput(context, endpoint, pad);
         Button endpointPicker = smallGlassButton(context, "روابط");
         LinearLayout endpointRow = new LinearLayout(context); endpointRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams endpointFieldLp = new LinearLayout.LayoutParams(0, -2, 1f); endpointRow.addView(endpoint, endpointFieldLp);
@@ -724,7 +725,7 @@ public final class BotnaAICompiler {
         LinearLayout.LayoutParams endpointLp = new LinearLayout.LayoutParams(-1, -2); endpointLp.topMargin = pad / 2; container.addView(endpointRow, endpointLp);
 
         EditText model = new EditText(context); model.setSingleLine(true); model.setInputType(InputType.TYPE_CLASS_TEXT);
-        model.setHint("اسم النموذج كما يقدمه المزوّد"); styleInput(context, model, pad);
+        model.setHint(BotnaI18n.translate(context, "اسم النموذج كما يقدمه المزوّد")); styleInput(context, model, pad);
         Button modelPicker = smallGlassButton(context, "النماذج");
         LinearLayout modelRow = new LinearLayout(context); modelRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams modelFieldLp = new LinearLayout.LayoutParams(0, -2, 1f); modelRow.addView(model, modelFieldLp);
@@ -735,9 +736,9 @@ public final class BotnaAICompiler {
         EditText key = new EditText(context); key.setSingleLine(false); key.setMinLines(2); key.setMaxLines(5);
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         key.setGravity(Gravity.TOP | Gravity.START);
-        key.setHint("أضف مفاتيح API جديدة — كل مفتاح في سطر مستقل. اتركه فارغًا للاحتفاظ بالمحفوظ"); styleInput(context, key, pad);
+        key.setHint(BotnaI18n.translate(context, "أضف مفاتيح API جديدة — كل مفتاح في سطر مستقل. اتركه فارغًا للاحتفاظ بالمحفوظ")); styleInput(context, key, pad);
         LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(-1, -2); keyLp.topMargin = pad / 3; container.addView(key, keyLp);
-        TextView keyCount = new TextView(context); keyCount.setTextColor(MUTED); keyCount.setTextSize(11); keyCount.setGravity(Gravity.RIGHT);
+        TextView keyCount = new TextView(context); keyCount.setTextColor(MUTED); keyCount.setTextSize(11); keyCount.setGravity(BotnaI18n.isEnglish(context) ? Gravity.LEFT : Gravity.RIGHT); BotnaI18n.applyDirection(context, keyCount);
         LinearLayout.LayoutParams keyCountLp = new LinearLayout.LayoutParams(-1, -2); keyCountLp.topMargin = pad / 5; container.addView(keyCount, keyCountLp);
         LinearLayout keyPreview = new LinearLayout(context); keyPreview.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams keyPreviewLp = new LinearLayout.LayoutParams(-1, -2); keyPreviewLp.topMargin = pad / 5; container.addView(keyPreview, keyPreviewLp);
@@ -745,14 +746,16 @@ public final class BotnaAICompiler {
             keyPreview.removeAllViews();
             List<String> lines = splitKeyLines(key.getText().toString());
             for (int i = 0; i < lines.size(); i++) {
-                TextView item = new TextView(context); item.setText("مفتاح جديد " + (i + 1) + " • سيُحفظ مشفّرًا");
+                TextView item = new TextView(context); item.setText(BotnaI18n.isEnglish(context) ? "New key " + (i + 1) + " • will be encrypted" : "مفتاح جديد " + (i + 1) + " • سيُحفظ مشفّرًا");
                 item.setTextColor(TEXT); item.setTextSize(11); item.setPadding(pad / 2, pad / 5, pad / 2, pad / 5);
                 item.setBackground(shape(context, Color.argb(95, 35, 226, 244), CYAN)); keyPreview.addView(item, new LinearLayout.LayoutParams(-1, -2));
                 if (i + 1 < lines.size()) { View divider = new View(context); divider.setBackgroundColor(Color.argb(150, 35, 226, 244));
                     LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(-1, Math.max(1, pad / 12)); dividerLp.topMargin = pad / 5; dividerLp.bottomMargin = pad / 5; keyPreview.addView(divider, dividerLp); }
             }
             int saved = BotnaKeyVault.count(context, providerSpinner.getSelectedItemPosition() >= 0 && providerSpinner.getSelectedItemPosition() < ids.length ? ids[providerSpinner.getSelectedItemPosition()] : PROVIDER_GEMINI);
-            keyCount.setText("المفاتيح المحفوظة لهذا المزوّد: " + saved + " • مفاتيح جديدة في الحقل: " + lines.size() + " • الحد الأقصى 20");
+            keyCount.setText(BotnaI18n.isEnglish(context)
+                    ? "Saved keys for this provider: " + saved + " • New keys in field: " + lines.size() + " • maximum 20"
+                    : "المفاتيح المحفوظة لهذا المزوّد: " + saved + " • مفاتيح جديدة في الحقل: " + lines.size() + " • الحد الأقصى 20");
         };
         key.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -760,11 +763,11 @@ public final class BotnaAICompiler {
             @Override public void afterTextChanged(android.text.Editable e) { }
         });
 
-        TextView help = new TextView(context); help.setTextColor(MUTED); help.setTextSize(12); help.setGravity(Gravity.RIGHT);
+        TextView help = new TextView(context); help.setTextColor(MUTED); help.setTextSize(12); help.setGravity(BotnaI18n.isEnglish(context) ? Gravity.LEFT : Gravity.RIGHT); BotnaI18n.applyDirection(context, help);
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2); helpLp.topMargin = pad / 3; container.addView(help, helpLp);
 
         Button testConnectionButton = new Button(context);
-        testConnectionButton.setText("اختبار الاتصال دون تنفيذ أي خطوة");
+        testConnectionButton.setText(BotnaI18n.buttonText(context, "اختبار الاتصال دون تنفيذ أي خطوة"));
         testConnectionButton.setTextSize(13);
         testConnectionButton.setAllCaps(false);
         testConnectionButton.setTextColor(TEXT);
@@ -790,28 +793,30 @@ public final class BotnaAICompiler {
             model.setText(draft == null ? savedOrDefault(context, MODEL_PREFIX + id, defaultModel(id)) : draft[1]);
             key.setText(draft == null ? "" : draft[2]);
             int savedKeyCount = BotnaKeyVault.count(context, id);
-            status.setText(savedKeyCount > 0 ? "✓ يوجد " + savedKeyCount + " مفتاح/مفاتيح محفوظة ومشفّرة؛ سيجرّب التطبيق المفاتيح المتاحة، لكن مفاتيح Gemini من المشروع نفسه تشترك في الحصة." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.");
+            status.setText(savedKeyCount > 0
+                    ? (BotnaI18n.isEnglish(context) ? "✓ " + savedKeyCount + " encrypted key(s) saved. Available keys are tried, but Gemini keys from the same project share quota." : "✓ يوجد " + savedKeyCount + " مفتاح/مفاتيح محفوظة ومشفّرة؛ سيجرّب التطبيق المفاتيح المتاحة، لكن مفاتيح Gemini من المشروع نفسه تشترك في الحصة.")
+                    : (BotnaI18n.isEnglish(context) ? "No key is saved for this provider yet." : "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن."));
             refreshKeyPreview.run();
             if (PROVIDER_GITHUB_MODELS.equals(id)) {
-                help.setText("GitHub Models: أدخل GitHub token صالحًا واسم نموذج متاحًا لحسابك. الحصة المجانية وحدود النماذج تتغير حسب شروط GitHub.");
+                help.setText(BotnaI18n.translate(context, "GitHub Models: أدخل GitHub token صالحًا واسم نموذج متاحًا لحسابك. الحصة المجانية وحدود النماذج تتغير حسب شروط GitHub."));
             } else if (PROVIDER_DEEPSEEK.equals(id)) {
-                help.setText("DeepSeek: رابط Chat Completions مستقل. النموذج الافتراضي deepseek-flash؛ استخدم زر النماذج لمعرفة المعرفات المتاحة لحسابك.");
+                help.setText(BotnaI18n.translate(context, "DeepSeek: رابط Chat Completions مستقل. النموذج الافتراضي deepseek-flash؛ استخدم زر النماذج لمعرفة المعرفات المتاحة لحسابك."));
             } else if (PROVIDER_OPENROUTER.equals(id)) {
-                help.setText("OpenRouter: كل النماذج تمر عبر هذا المزود، وقد تختلف الرؤية والسعر حسب النموذج. اختر نموذجًا يدعم الصور إذا أرفقت لقطة شاشة.");
+                help.setText(BotnaI18n.translate(context, "OpenRouter: كل النماذج تمر عبر هذا المزود، وقد تختلف الرؤية والسعر حسب النموذج. اختر نموذجًا يدعم الصور إذا أرفقت لقطة شاشة."));
             } else if (PROVIDER_GROQ.equals(id)) {
-                help.setText("Groq API: استخدم مفتاح Groq ومعرف نموذج فعّال من القائمة المباشرة. ليست كل النماذج تدعم الصور.");
+                help.setText(BotnaI18n.translate(context, "Groq API: استخدم مفتاح Groq ومعرف نموذج فعّال من القائمة المباشرة. ليست كل النماذج تدعم الصور."));
             } else if (PROVIDER_OPENAI_COMPAT.equals(id)) {
-                help.setText("ملف متوافق قديم للحفاظ على الإعدادات السابقة. يفضّل اختيار DeepSeek أو OpenRouter أو Groq من الملفات المفصولة.");
+                help.setText(BotnaI18n.translate(context, "ملف متوافق قديم للحفاظ على الإعدادات السابقة. يفضّل اختيار DeepSeek أو OpenRouter أو Groq من الملفات المفصولة."));
             } else if (PROVIDER_CUSTOM.equals(id)) {
-                help.setText("أدخل رابط /chat/completions الكامل مع المفتاح ومعرّف النموذج. يدعم هذا غالبية واجهات OpenAI-compatible، وليس كل واجهات النماذج الخاصة.");
+                help.setText(BotnaI18n.translate(context, "أدخل رابط /chat/completions الكامل مع المفتاح ومعرّف النموذج. يدعم هذا غالبية واجهات OpenAI-compatible، وليس كل واجهات النماذج الخاصة."));
             } else if (PROVIDER_COPILOT_BRIDGE.equals(id)) {
-                help.setText("لا يمكن استخدام Copilot Free بإدخال مفتاح API عادي. هذا الخيار يتطلب خدمة جسر خارجية تستخدم تكامل GitHub Copilot الرسمي وOAuth/SDK؛ لا تستخدم نقاط API غير موثقة.");
+                help.setText(BotnaI18n.translate(context, "لا يمكن استخدام Copilot Free بإدخال مفتاح API عادي. هذا الخيار يتطلب خدمة جسر خارجية تستخدم تكامل GitHub Copilot الرسمي وOAuth/SDK؛ لا تستخدم نقاط API غير موثقة."));
             } else if (PROVIDER_ANTHROPIC.equals(id)) {
-                help.setText("يتطلب مفتاح Anthropic API صالحًا ورصيد/حصة في حساب Anthropic. رابط Messages API قابل للتعديل.");
+                help.setText(BotnaI18n.translate(context, "يتطلب مفتاح Anthropic API صالحًا ورصيد/حصة في حساب Anthropic. رابط Messages API قابل للتعديل."));
             } else if (PROVIDER_GEMINI.equals(id)) {
-                help.setText("أدخل مفتاح Gemini API. في هذا الوضع اكتب جذر API مثل https://generativelanguage.googleapis.com/v1beta واسم النموذج دون بادئة models/.");
+                help.setText(BotnaI18n.translate(context, "أدخل مفتاح Gemini API. في هذا الوضع اكتب جذر API مثل https://generativelanguage.googleapis.com/v1beta واسم النموذج دون بادئة models/."));
             } else {
-                help.setText("يستخدم هذا الوضع OpenAI Responses API. مفتاح ChatGPT/Copilot لا يعادل تلقائيًا مفتاح API؛ استخدم اعتماد API رسميًا من المزوّد.");
+                help.setText(BotnaI18n.translate(context, "يستخدم هذا الوضع OpenAI Responses API. مفتاح ChatGPT/Copilot لا يعادل تلقائيًا مفتاح API؛ استخدم اعتماد API رسميًا من المزوّد."));
             }
         };
         providerSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -831,15 +836,18 @@ public final class BotnaAICompiler {
             String selectedProvider = ids[index];
             String[] values = endpointSuggestions(selectedProvider);
             String[] labelsForPicker = endpointSuggestionLabels(selectedProvider);
-            AlertDialog picker = new AlertDialog.Builder(context).setTitle("روابط API المقترحة — " + providerLabel(selectedProvider))
+            if (BotnaI18n.isEnglish(context)) {
+                for (int i = 0; i < labelsForPicker.length; i++) labelsForPicker[i] = (i == 0 ? "★ Recommended — " : "Compatible alternative — ") + (values[i].isEmpty() ? "Enter bridge URL manually" : values[i]);
+            }
+            AlertDialog picker = new AlertDialog.Builder(context).setTitle(BotnaI18n.isEnglish(context) ? "Suggested API endpoints — " + providerLabel(selectedProvider) : "روابط API المقترحة — " + providerLabel(selectedProvider))
                     .setItems(labelsForPicker, (d, which) -> {
                         if (which < 0 || which >= values.length) return;
                         endpoint.setText(values[which]);
                         drafts.put(selectedProvider, new String[]{values[which], model.getText().toString(), key.getText().toString()});
-                        status.setText("تم اختيار الرابط. اضغط حفظ الإعدادات لاعتماده.");
-                    }).setNegativeButton("إغلاق", null).create();
+                        status.setText(BotnaI18n.translate(context, "تم اختيار الرابط. اضغط حفظ الإعدادات لاعتماده."));
+                    }).setNegativeButton(BotnaI18n.translate(context, "إغلاق"), null).create();
             try { if (picker.getWindow() != null && accessibilityOverlay) picker.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); picker.show(); }
-            catch (Exception ex) { status.setText("تعذر عرض روابط API."); }
+            catch (Exception ex) { status.setText(BotnaI18n.translate(context, "تعذر عرض روابط API.")); }
         });
 
         modelPicker.setOnClickListener(v -> {
@@ -852,9 +860,9 @@ public final class BotnaAICompiler {
             List<String> typedKeys = splitKeyLines(data[2]);
             final String selectedKey = typedKeys.isEmpty() ? BotnaKeyVault.load(context, selectedProvider) : typedKeys.get(0);
             if (selectedEndpoint.isEmpty() || selectedKey.isEmpty()) {
-                status.setText("أدخل رابط API ومفتاح هذا المزود قبل جلب النماذج."); return;
+                status.setText(BotnaI18n.translate(context, "أدخل رابط API ومفتاح هذا المزود قبل جلب النماذج.")); return;
             }
-            modelPicker.setEnabled(false); status.setText("جارٍ جلب نماذج " + providerLabel(selectedProvider) + " من API…");
+            modelPicker.setEnabled(false); status.setText(BotnaI18n.isEnglish(context) ? "Fetching models for " + providerLabel(selectedProvider) + " from API…" : "جارٍ جلب نماذج " + providerLabel(selectedProvider) + " من API…");
             final String requestedProvider = selectedProvider;
             new Thread(() -> {
                 List<ModelOption> found = new ArrayList<>(); String error = null;
@@ -864,24 +872,36 @@ public final class BotnaAICompiler {
                 new Handler(Looper.getMainLooper()).post(() -> {
                     modelPicker.setEnabled(true);
                     if (providerSpinner.getSelectedItemPosition() >= 0 && !requestedProvider.equals(ids[providerSpinner.getSelectedItemPosition()])) {
-                        status.setText("تم إنهاء طلب النماذج للمزود السابق؛ اختره مرة أخرى لعرض النتيجة."); return;
+                        status.setText(BotnaI18n.translate(context, "تم إنهاء طلب النماذج للمزود السابق؛ اختره مرة أخرى لعرض النتيجة.")); return;
                     }
                     if (fetchError != null || modelsFound.isEmpty()) {
-                        status.setText("تعذر جلب النماذج: " + (fetchError == null ? "لم يرجع API قائمة نماذج." : fetchError)); return;
+                        status.setText(BotnaI18n.isEnglish(context)
+                                ? "Could not fetch models: " + (fetchError == null ? "The API returned no model list." : fetchError)
+                                : "تعذر جلب النماذج: " + (fetchError == null ? "لم يرجع API قائمة نماذج." : fetchError)); return;
                     }
                     int count = Math.min(modelsFound.size(), 80);
                     String[] display = new String[count];
-                    for (int i = 0; i < count; i++) display[i] = modelsFound.get(i).label;
-                    AlertDialog modelsDialog = new AlertDialog.Builder(context).setTitle("النماذج المتاحة — " + providerLabel(requestedProvider))
+                    for (int i = 0; i < count; i++) {
+                        String label = modelsFound.get(i).label;
+                        if (BotnaI18n.isEnglish(context)) {
+                            label = label.replace("★ الافتراضي", "★ Default")
+                                    .replace("★ الافتراضي —", "★ Default —")
+                                    .replace("✓ يدعم الصور", "✓ Vision")
+                                    .replace("★ موصى به", "★ Recommended")
+                                    .replace("بديل متوافق", "Compatible alternative");
+                        }
+                        display[i] = label;
+                    }
+                    AlertDialog modelsDialog = new AlertDialog.Builder(context).setTitle(BotnaI18n.isEnglish(context) ? "Available models — " + providerLabel(requestedProvider) : "النماذج المتاحة — " + providerLabel(requestedProvider))
                             .setItems(display, (d, which) -> {
                                 if (which < 0 || which >= count) return;
                                 String chosen = modelsFound.get(which).id;
                                 model.setText(chosen);
                                 drafts.put(requestedProvider, new String[]{endpoint.getText().toString(), chosen, key.getText().toString()});
-                                status.setText("اخترت النموذج " + chosen + ". اضغط حفظ الإعدادات للاعتماد.");
-                            }).setNegativeButton("إغلاق", null).create();
+                                status.setText(BotnaI18n.isEnglish(context) ? "Selected model " + chosen + ". Save settings to apply it." : "اخترت النموذج " + chosen + ". اضغط حفظ الإعدادات للاعتماد.");
+                            }).setNegativeButton(BotnaI18n.translate(context, "إغلاق"), null).create();
                     try { if (modelsDialog.getWindow() != null && accessibilityOverlay) modelsDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); modelsDialog.show(); }
-                    catch (Exception ex) { status.setText("تعذر عرض قائمة النماذج."); }
+                    catch (Exception ex) { status.setText(BotnaI18n.translate(context, "تعذر عرض قائمة النماذج.")); }
                 });
             }, "Botna-Model-Fetch").start();
         });
@@ -898,11 +918,11 @@ public final class BotnaAICompiler {
             List<String> providedKeys = splitKeyLines(data[2]);
             final String testKey = providedKeys.isEmpty() ? BotnaKeyVault.load(context, selected) : providedKeys.get(0);
             if (testEndpoint.isEmpty() || testModel.isEmpty() || testKey.isEmpty()) {
-                status.setText("أدخل رابط API والنموذج والمفتاح أو احفظ مفتاحًا لهذا المزوّد أولًا.");
+                status.setText(BotnaI18n.translate(context, "أدخل رابط API والنموذج والمفتاح أو احفظ مفتاحًا لهذا المزوّد أولًا."));
                 return;
             }
             testConnectionButton.setEnabled(false);
-            status.setText("جارٍ اختبار الاتصال… لن تُنفّذ أي خطوة على الهاتف.");
+            status.setText(BotnaI18n.translate(context, "جارٍ اختبار الاتصال… لن تُنفّذ أي خطوة على الهاتف."));
             final String testProvider = selected;
             new Thread(() -> {
                 String outcome;
@@ -951,7 +971,7 @@ public final class BotnaAICompiler {
         secondaryActionsLp.leftMargin = pad / 2; secondaryActionsLp.rightMargin = pad / 2; secondaryActionsLp.topMargin = pad / 4; secondaryActionsLp.bottomMargin = pad / 3;
         dialogRoot.addView(secondaryActions, secondaryActionsLp);
 
-        AlertDialog dialog = new AlertDialog.Builder(context).setTitle("مركز إعدادات مزوّدي الذكاء الاصطناعي")
+        AlertDialog dialog = new AlertDialog.Builder(context).setTitle(BotnaI18n.translate(context, "مركز إعدادات مزوّدي الذكاء الاصطناعي"))
                 .setView(dialogRoot).create();
         try {
             if (dialog.getWindow() != null && accessibilityOverlay) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
@@ -1008,16 +1028,16 @@ public final class BotnaAICompiler {
                 } catch (Exception ignored) { }
                 int index = providerSpinner.getSelectedItemPosition(); if (index < 0 || index >= ids.length) return;
                 String selected = ids[index];
-                AlertDialog confirm = new AlertDialog.Builder(context).setTitle("مسح مفاتيح المزوّد")
-                        .setMessage("سيُحذف جميع مفاتيح هذا المزوّد المشفّرة فقط، ولن تتأثر مفاتيح المزوّدين الآخرين. لا يمكن التراجع عن الحذف. متابعة؟")
-                        .setPositiveButton("مسح جميع المفاتيح", (d, w) -> {
+                AlertDialog confirm = new AlertDialog.Builder(context).setTitle(BotnaI18n.translate(context, "مسح مفاتيح المزوّد"))
+                        .setMessage(BotnaI18n.translate(context, "سيُحذف جميع مفاتيح هذا المزوّد المشفّرة فقط، ولن تتأثر مفاتيح المزوّدين الآخرين. لا يمكن التراجع عن الحذف. متابعة؟"))
+                        .setPositiveButton(BotnaI18n.translate(context, "مسح جميع المفاتيح"), (d, w) -> {
                             try {
                                 BotnaKeyVault.save(context, selected, "");
-                                status.setText("تم حذف جميع مفاتيح هذا المزوّد."); key.setText(""); drafts.put(selected, new String[]{endpoint.getText().toString(), model.getText().toString(), ""}); refreshKeyPreview.run();
+                                status.setText(BotnaI18n.translate(context, "تم حذف جميع مفاتيح هذا المزوّد.")); key.setText(BotnaI18n.translate(context, "")); drafts.put(selected, new String[]{endpoint.getText().toString(), model.getText().toString(), ""}); refreshKeyPreview.run();
                                 Toast.makeText(context, "تم مسح جميع مفاتيح هذا المزوّد.", Toast.LENGTH_SHORT).show();
                                 if (onSaved != null) onSaved.run();
                             } catch (Exception e) { Toast.makeText(context, "تعذر مسح المفتاح.", Toast.LENGTH_LONG).show(); }
-                        }).setNegativeButton("إلغاء", null).create();
+                        }).setNegativeButton(BotnaI18n.translate(context, "إلغاء"), null).create();
                 try { if (confirm.getWindow() != null && accessibilityOverlay) confirm.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); confirm.show(); }
                 catch (Exception e) { Toast.makeText(context, "تعذر فتح تأكيد المسح.", Toast.LENGTH_LONG).show(); }
             });
@@ -1034,7 +1054,13 @@ public final class BotnaAICompiler {
         button.setText(label); button.setAllCaps(false); button.setTextSize(10);
         button.setTextColor(TEXT);
         button.setPadding(2, 0, 2, 0);
-        button.setBackground(shape(context, Color.argb(205, 13, 28, 42), CYAN));
+        android.graphics.drawable.GradientDrawable glass = new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.argb(245, 18, 103, 151), Color.argb(245, 10, 44, 82)});
+        glass.setCornerRadius(Math.round(12 * context.getResources().getDisplayMetrics().density));
+        glass.setStroke(Math.max(1, Math.round(context.getResources().getDisplayMetrics().density)), CYAN);
+        button.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Color.argb(100, 120, 240, 255)), glass, null));
         return button;
     }
 
