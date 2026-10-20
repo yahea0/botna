@@ -22,7 +22,6 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
-/** Encrypts API keys locally. Multiple keys per provider rotate after quota/auth errors. */
 public final class BotnaKeyVault {
     private static final String LEGACY_ALIAS = "botna_ai_api_key_v1";
     private static final String V2_ALIAS_PREFIX = "botna_ai_key_v2_";
@@ -36,12 +35,10 @@ public final class BotnaKeyVault {
 
     private BotnaKeyVault() { }
 
-    /** Backwards-compatible legacy API used by older builds. */
     public static synchronized void save(Context context, String apiKey) throws Exception {
         saveEncrypted(context, LEGACY_KEY, LEGACY_ALIAS, apiKey);
     }
 
-    /** Backwards-compatible provider API. Empty string clears all provider keys. */
     public static synchronized void save(Context context, String profileId, String apiKey) throws Exception {
         String id = safeId(profileId);
         if (apiKey == null || apiKey.trim().isEmpty()) {
@@ -82,7 +79,6 @@ public final class BotnaKeyVault {
         if (!editor.commit()) throw new IllegalStateException("تعذر حفظ مفاتيح هذا المزوّد مشفّرة.");
     }
 
-    /** Loads all keys in stable order, migrating an older single-key profile in memory. */
     public static synchronized ArrayList<String> loadAll(Context context, String profileId) {
         String id = safeId(profileId);
         ArrayList<String> keys = new ArrayList<>();
@@ -103,7 +99,6 @@ public final class BotnaKeyVault {
         return keys;
     }
 
-    /** Current key, using the saved round-robin position. */
     public static synchronized String load(Context context, String profileId) {
         ArrayList<String> keys = loadAll(context, profileId);
         if (keys.isEmpty()) return "";
@@ -140,7 +135,6 @@ public final class BotnaKeyVault {
         return count(context, profileId) > 0;
     }
 
-    /** Backwards-compatible legacy key loader. */
     public static synchronized String load(Context context) {
         return loadEncrypted(context, LEGACY_KEY, LEGACY_ALIAS);
     }
