@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Botna — Smart Automation</string>
+    <string name="accessibility_service_label">Botna — Automation service</string>
+    <string name="accessibility_description">Botna Accessibility service reads visible interface elements and captures screenshots after you enable the service. It stores image templates locally and performs automation steps you configure.</string>
+</resources>
