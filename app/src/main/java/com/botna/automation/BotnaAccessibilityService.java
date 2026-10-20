@@ -76,6 +76,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     public static final String ACTION_START_SMART_TASK = "com.botna.automation.START_SMART_TASK";
     public static final String ACTION_OPEN_AGENT_SCRIPT = "com.botna.automation.OPEN_AGENT_SCRIPT";
     public static final String ACTION_RUN_AGENT_SCRIPT = "com.botna.automation.RUN_AGENT_SCRIPT";
+    public static final String ACTION_LANGUAGE_CHANGED = "com.botna.automation.LANGUAGE_CHANGED";
     public static final String PREF_PENDING_SMART_TASK = "pending_smart_task_v1";
     public static final String PREF_PENDING_SMART_TASK_ID = "pending_smart_task_id_v1";
 
@@ -231,6 +232,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     handler.post(() -> openAgentScript(scriptId, true));
                     return;
                 }
+                if (ACTION_LANGUAGE_CHANGED.equals(action)) {
+                    handler.post(() -> refreshVisibleUiForLanguage());
+                    return;
+                }
                 String task = intent.getStringExtra("task");
                 String taskId = intent.getStringExtra("agentTaskId");
                 if (task == null || task.trim().isEmpty()) task = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).getString(PREF_PENDING_SMART_TASK, "");
@@ -245,11 +250,26 @@ public class BotnaAccessibilityService extends AccessibilityService {
         filter.addAction(ACTION_START_SMART_TASK);
         filter.addAction(ACTION_OPEN_AGENT_SCRIPT);
         filter.addAction(ACTION_RUN_AGENT_SCRIPT);
+        filter.addAction(ACTION_LANGUAGE_CHANGED);
         try {
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(smartTaskReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
             else registerReceiver(smartTaskReceiver, filter);
             smartTaskReceiverRegistered = true;
         } catch (Exception ignored) { smartTaskReceiverRegistered = false; }
+    }
+
+    private void refreshVisibleUiForLanguage() {
+        boolean reopen = panelVisible;
+        if (panelVisible) hidePanel();
+        if (bubble != null) { removeView(bubble); bubble = null; }
+        showBubble();
+        if (reopen) showPanel();
+        if (running) showRunControls();
+    }
+
+    private void changeLanguageFromOverlay() {
+        BotnaI18n.setLanguage(this, BotnaI18n.isEnglish(this) ? "ar" : "en");
+        refreshVisibleUiForLanguage();
     }
 
     private void openAgentScript(String scriptId, boolean runNow) {
@@ -317,7 +337,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         b.setText("B"); b.setTextSize(20); b.setTextColor(CYAN);
         b.setGravity(Gravity.CENTER); b.setElevation(dp(12));
         b.setBackground(glassShape(Color.argb(228, 8, 13, 22), Color.argb(240, 35, 226, 244), 2, 36));
-        b.setContentDescription("بوتنا: افتح لوحة الأتمتة");
+        b.setContentDescription(BotnaI18n.translate(this, "بوتنا: افتح لوحة الأتمتة"));
         android.util.DisplayMetrics metrics = realScreenMetrics();
         int size = dp(58);
         android.content.SharedPreferences prefs = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE);
@@ -401,6 +421,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10), dp(10), dp(10), dp(10));
+        BotnaI18n.applyDirection(this, root);
         root.setBackground(glassShape(GLASS, Color.argb(235, 35, 226, 244), 2, 22));
         root.setElevation(dp(16));
 
@@ -408,18 +429,22 @@ public class BotnaAccessibilityService extends AccessibilityService {
         TextView title = label("BOTNA  •  الأتمتة الذكية", 16, TEXT, true);
         title.setTextSize(13);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
+        Button language = button("🌐", false);
+        language.setContentDescription(BotnaI18n.isEnglish(this) ? "Switch application language to Arabic" : "تغيير لغة التطبيق إلى الإنجليزية");
+        header.addView(language, new LinearLayout.LayoutParams(dp(38), dp(42)));
+        language.setOnClickListener(v -> changeLanguageFromOverlay());
         Button hideList = button("إخفاء القائمة", false);
         hideList.setTextSize(11);
-        hideList.setContentDescription("إخفاء القائمة والعودة إلى الزر العائم");
+        hideList.setContentDescription(BotnaI18n.translate(this, "إخفاء القائمة والعودة إلى الزر العائم"));
         hideList.setOnClickListener(v -> { hidePanel(); showBubble(); });
         header.addView(hideList, new LinearLayout.LayoutParams(dp(82), dp(42)));
         Button saveClose = button("حفظ", false);
-        saveClose.setContentDescription("حفظ السكربت وإغلاق لوحة الأتمتة");
+        saveClose.setContentDescription(BotnaI18n.translate(this, "حفظ السكربت وإغلاق لوحة الأتمتة"));
         saveClose.setOnClickListener(v -> confirmSaveAndClose());
         header.addView(saveClose, new LinearLayout.LayoutParams(dp(50), dp(42)));
         Button close = button("×", false);
         close.setTextSize(20);
-        close.setContentDescription("إغلاق لوحة الأتمتة بعد تأكيد الحفظ");
+        close.setContentDescription(BotnaI18n.translate(this, "إغلاق لوحة الأتمتة بعد تأكيد الحفظ"));
         close.setOnClickListener(v -> confirmSaveAndClose());
         LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(34), dp(42));
         closeLp.setMargins(dp(4), 0, 0, 0);
@@ -435,7 +460,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout.LayoutParams fixedPauseLp = new LinearLayout.LayoutParams(0, dp(38), 1); fixedPauseLp.setMargins(dp(3), 0, dp(3), 0); fixedRunRow.addView(fixedPause, fixedPauseLp);
         fixedRunRow.addView(fixedStop, new LinearLayout.LayoutParams(0, dp(38), 1));
         Button searchCommands = button("⌕", false);
-        searchCommands.setContentDescription("البحث عن أمر أو خطوة لإضافتها إلى السكربت");
+        searchCommands.setContentDescription(BotnaI18n.translate(this, "البحث عن أمر أو خطوة لإضافتها إلى السكربت"));
         searchCommands.setTooltipText("بحث عن أمر");
         LinearLayout.LayoutParams searchCommandsLp = new LinearLayout.LayoutParams(dp(42), dp(38));
         searchCommandsLp.leftMargin = dp(3);
@@ -739,15 +764,15 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void confirmSaveAndClose() {
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("حفظ السكربت والخروج")
-                .setMessage("سيتم حفظ التعديلات ثم إغلاق لوحة الأتمتة والزر العائم B معًا. هل تريد المتابعة؟")
-                .setPositiveButton("حفظ وخروج", (d, w) -> {
+                .setTitle(BotnaI18n.translate(this, "حفظ السكربت والخروج"))
+                .setMessage(BotnaI18n.translate(this, "سيتم حفظ التعديلات ثم إغلاق لوحة الأتمتة والزر العائم B معًا. هل تريد المتابعة؟"))
+                .setPositiveButton(BotnaI18n.translate(this, "حفظ وخروج"), (d, w) -> {
                     BotnaStore.saveScripts(this, BotnaStore.scripts(this));
                     hidePanel();
                     removeView(bubble); bubble = null;
                     report("تم حفظ السكربت وإغلاق اللوحة والزر العائم.");
                 })
-                .setNegativeButton("إلغاء", (d, w) -> { })
+                .setNegativeButton(BotnaI18n.translate(this, "إلغاء"), (d, w) -> { })
                 .create();
         try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
         catch (Exception e) { report("تعذر فتح نافذة تأكيد الخروج."); }
@@ -840,10 +865,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void confirmDeleteStep(int index) {
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("حذف الخطوة")
-                .setMessage("هل تريد حذف هذه الخطوة نهائيًا؟")
-                .setPositiveButton("حذف", (d, w) -> deleteStep(index))
-                .setNegativeButton("إلغاء", (d, w) -> { })
+                .setTitle(BotnaI18n.translate(this, "حذف الخطوة"))
+                .setMessage(BotnaI18n.translate(this, "هل تريد حذف هذه الخطوة نهائيًا؟"))
+                .setPositiveButton(BotnaI18n.translate(this, "حذف"), (d, w) -> deleteStep(index))
+                .setNegativeButton(BotnaI18n.translate(this, "إلغاء"), (d, w) -> { })
                 .create();
         try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
         catch (Exception e) { report("تعذر فتح تأكيد الحذف."); }
@@ -1293,9 +1318,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 row.addView(remove, new LinearLayout.LayoutParams(dp(30), dp(34)));
                 settings.setOnClickListener(v -> editImageAngleSettings(script, step, filename, angleIndex, stepIndex));
                 remove.setOnClickListener(v -> {
-                    AlertDialog confirm = new AlertDialog.Builder(this).setTitle("حذف الزاوية")
+                    AlertDialog confirm = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, "حذف الزاوية"))
                             .setMessage("هل تريد حذف الزاوية " + (angleIndex + 1) + " من خطوة الصورة؟")
-                            .setPositiveButton("حذف", (d, w) -> {
+                            .setPositiveButton(BotnaI18n.translate(this, "حذف"), (d, w) -> {
                                 JSONArray current = step.optJSONArray("images"); JSONArray next = new JSONArray();
                                 if (current != null) for (int j = 0; j < current.length(); j++) if (j != angleIndex) next.put(current.optString(j));
                                 try { step.put("images", next); } catch (JSONException ignored) { }
@@ -1304,15 +1329,15 @@ public class BotnaAccessibilityService extends AccessibilityService {
                                 report("تم حذف الزاوية وإعداداتها.");
                                 if (imageAnglesDialog != null && imageAnglesDialog.isShowing()) imageAnglesDialog.dismiss();
                                 showImageAngles(script, step, stepIndex);
-                            }).setNegativeButton("إلغاء", (d, w) -> { }).create();
+                            }).setNegativeButton(BotnaI18n.translate(this, "إلغاء"), (d, w) -> { }).create();
                     try { if (confirm.getWindow() != null) confirm.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); confirm.show(); }
                     catch (Exception e) { report("تعذر فتح تأكيد حذف الزاوية."); }
                 });
                 list.addView(row);
             }
         }
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("زوايا الصورة وإعدادات كل زاوية")
-                .setView(scroller).setPositiveButton("إغلاق", (d,w)->{}).create();
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, "زوايا الصورة وإعدادات كل زاوية"))
+                .setView(scroller).setPositiveButton(BotnaI18n.translate(this, "إغلاق"), (d,w)->{}).create();
         imageAnglesDialog = dialog;
         dialog.setOnDismissListener(d -> { for (Bitmap b : loaded) if (b != null && !b.isRecycled()) b.recycle(); });
         try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
@@ -1484,7 +1509,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void showChoice(String title, String[] options, ChoiceCallback callback) {
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(title).setItems(options, (d, which) -> callback.done(which)).create();
+        String[] displayed = options == null ? new String[0] : options.clone();
+        for (int i = 0; i < displayed.length; i++) displayed[i] = BotnaI18n.translate(this, displayed[i]);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, title)).setItems(displayed, (d, which) -> callback.done(which)).create();
         try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
         catch (Exception e) { Toast.makeText(this, "تعذر فتح قائمة الخيارات", Toast.LENGTH_LONG).show(); }
     }
@@ -1519,11 +1546,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
         input.setGravity(Gravity.TOP | Gravity.START);
         input.setTextSize(15); input.setPadding(dp(12), dp(10), dp(12), dp(10));
         input.setTextColor(TEXT); input.setHintTextColor(MUTED);
-        input.setHint("مثال: تابع صورة رقم 4 بالمكتبة، إذا وجدتها انتظر ثانيتين ثم ارجع");
+        input.setHint(BotnaI18n.translate(this, "مثال: تابع صورة رقم 4 بالمكتبة، إذا وجدتها انتظر ثانيتين ثم ارجع"));
         input.setBackground(glassShape(Color.rgb(8, 14, 22), CYAN, 1, 12));
         content.addView(input, new LinearLayout.LayoutParams(-1, -2));
         CheckBox includeScreenContext = new CheckBox(this);
-        includeScreenContext.setText("إرفاق لقطة الشاشة الحالية للمترجم البصري");
+        includeScreenContext.setText(BotnaI18n.translate(this, "إرفاق لقطة الشاشة الحالية للمترجم البصري"));
         includeScreenContext.setTextColor(MUTED);
         includeScreenContext.setTextSize(12);
         includeScreenContext.setButtonTintList(android.content.res.ColorStateList.valueOf(CYAN));
@@ -1582,7 +1609,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         editorActions.addView(analyzeEditor, new LinearLayout.LayoutParams(editorActionLp));
         editorRoot.addView(editorActions, new LinearLayout.LayoutParams(-1, -2));
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("اكتب الأمر بالعربية")
+                .setTitle(BotnaI18n.translate(this, "اكتب الأمر بالعربية"))
                 .setView(editorRoot)
                 .create();
         try {
@@ -2012,8 +2039,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
             for(int i=0;i<warnings.length();i++){TextView w=label("• "+warnings.optString(i),11,MUTED,false);blocks.addView(w,wrap());}
         }
         scroll.addView(blocks); LinearLayout.LayoutParams scrollLp=new LinearLayout.LayoutParams(-1,dp(390));scrollLp.topMargin=dp(8);root.addView(scroll,scrollLp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("بلوكات الخطوة المخصصة • "+compiled.length()).setView(root).setPositiveButton("إغلاق",null)
-                .setNeutralButton("إعادة تحليل النص",null).create();
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(BotnaI18n.isEnglish(this) ? "Custom step blocks • " + compiled.length() : "بلوكات الخطوة المخصصة • " + compiled.length()).setView(root).setPositiveButton(BotnaI18n.translate(this, "إغلاق"),null)
+                .setNeutralButton(BotnaI18n.translate(this, "إعادة تحليل النص"),null).create();
         compiledBlockDialog = dialog;
         dialog.setOnDismissListener(d -> { if (compiledBlockDialog == dialog) compiledBlockDialog = null; });
         try {
@@ -2052,7 +2079,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         options.add(block.optBoolean("enabled",true)?"تعطيل هذا البلوك":"تفعيل هذا البلوك");
         options.add("حذف هذا البلوك");
         final String[] items=options.toArray(new String[0]);
-        AlertDialog settingsDialog = new AlertDialog.Builder(this).setTitle("تغيير إعدادات البلوك "+(blockIndex+1)).setItems(items,(d,choice)->{
+        final String[] displayItems=items.clone();
+        for(int i=0;i<displayItems.length;i++) displayItems[i]=BotnaI18n.translate(this, displayItems[i]);
+        AlertDialog settingsDialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.isEnglish(this) ? "Change block settings " + (blockIndex + 1) : "تغيير إعدادات البلوك "+(blockIndex+1)).setItems(displayItems,(d,choice)->{
             d.dismiss();
             String selected=items[choice];
             if(selected.equals("انتظار قبل التنفيذ")){promptNumber("انتظار قبل التنفيذ (0–60000 ms)",block.optInt("beforeDelay",0),0,60000,v->updateCompiledBlock(parentId,blockIndex,"beforeDelay",v));return;}
@@ -2474,13 +2503,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void confirmDeleteLibraryImage(String id) {
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("حذف صورة المكتبة").setMessage("سيتم حذف قالب الصورة من المكتبة. الخطوات المخصصة التي تستخدمها ستعرض تحذيرًا إذا أصبحت الصورة غير متاحة. متابعة؟")
-                .setPositiveButton("حذف",(d,w)->{
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, "حذف صورة المكتبة")).setMessage(BotnaI18n.translate(this, "سيتم حذف قالب الصورة من المكتبة. الخطوات المخصصة التي تستخدمها ستعرض تحذيرًا إذا أصبحت الصورة غير متاحة. متابعة؟"))
+                .setPositiveButton(BotnaI18n.translate(this, "حذف"),(d,w)->{
                     JSONArray old=getLibrary(),next=new JSONArray(); String filename="";
                     for(int i=0;i<old.length();i++){JSONObject item=old.optJSONObject(i); if(item!=null&&id.equals(item.optString("id"))){filename=item.optString("fileName");continue;} next.put(item);}
                     saveLibrary(next); if(!filename.isEmpty()) {File f=new File(new File(getFilesDir(),"botna_library"),filename); if(f.exists()) f.delete();}
                     report("تم حذف صورة المكتبة."); showImageLibrary();
-                }).setNegativeButton("إلغاء",null).create();
+                }).setNegativeButton(BotnaI18n.translate(this, "إلغاء"),null).create();
         try { if(dialog.getWindow()!=null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
         catch(Exception e) { report("تعذر عرض تأكيد حذف صورة المكتبة."); }
     }
@@ -4545,7 +4574,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         EditText query = new EditText(this);
         query.setSingleLine(true); query.setTextSize(15); query.setTextColor(TEXT);
         query.setHintTextColor(MUTED);
-        query.setHint("ابحث عن أمر: بحث، كتابة، سحب، إشعارات…");
+        query.setHint(BotnaI18n.isEnglish(this) ? "Search commands: search, type, swipe, notifications…" : "ابحث عن أمر: بحث، كتابة، سحب، إشعارات…");
+        BotnaI18n.applyDirection(this, query);
         query.setBackground(glassShape(BUTTON, CYAN, 1, 12));
         query.setPadding(dp(12), dp(8), dp(12), dp(8));
         root.addView(query, new LinearLayout.LayoutParams(-1, dp(48)));
@@ -4558,8 +4588,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
         scrollLp.topMargin = dp(4); scrollLp.bottomMargin = dp(4); root.addView(scroll, scrollLp);
         Button close = button("إغلاق البحث", false);
+        close.setBackground(glassShape(Color.argb(245, 17, 76, 137), CYAN, 2, 12));
         root.addView(close, new LinearLayout.LayoutParams(-1, dp(42)));
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("بحث عن أمر لإضافته").setView(root).create();
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, "بحث عن أمر لإضافته")).setView(root).create();
         final AlertDialog[] owner = new AlertDialog[]{dialog};
         query.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -4605,6 +4636,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
             if (!q.isEmpty() && !titleKey.contains(q)) continue;
             matches++;
             Button result = button(entry.title, true);
+            result.setBackground(glassShape(Color.argb(248, 14, 76, 145), Color.argb(255, 35, 226, 244), 2, 14));
+            result.setTextColor(Color.WHITE);
             result.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
             result.setSingleLine(false); result.setMaxLines(3); result.setMinHeight(dp(42));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
@@ -4619,9 +4652,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 });
             });
         }
-        count.setText(matches + " أمر مطابق. اضغط على أمر لإضافته أو فتح إعداداته.");
+        count.setText(BotnaI18n.isEnglish(this)
+                ? matches + " matching commands. Select one to add it or open its settings."
+                : matches + " أمر مطابق. اضغط على أمر لإضافته أو فتح إعداداته.");
         if (matches == 0) {
-            TextView empty = label("لا توجد أوامر مطابقة. جرّب كلمة أقصر أو مرادفًا مثل: نقر، كتابة، انتظار، بحث.", 12, MUTED, false);
+            TextView empty = label(BotnaI18n.isEnglish(this)
+                    ? "No matching commands. Try a shorter term such as tap, type, wait, or search."
+                    : "لا توجد أوامر مطابقة. جرّب كلمة أقصر أو مرادفًا مثل: نقر، كتابة، انتظار، بحث.", 12, MUTED, false);
             empty.setPadding(dp(8), dp(12), dp(8), dp(12));
             results.addView(empty, wrap());
         }
@@ -4664,13 +4701,25 @@ public class BotnaAccessibilityService extends AccessibilityService {
         final Runnable action;
         CommandEntry(String title, Runnable action) { this.title = title; this.action = action; }
     }
-    private LinearLayout horizontal() { LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL); l.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); return l; }
+    private LinearLayout horizontal() { LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL); BotnaI18n.applyDirection(this, l); return l; }
     private Button button(String title, boolean primary) {
-        Button b=new Button(this); b.setText(title); b.setTextSize(12); b.setAllCaps(false); b.setPadding(dp(4),dp(3),dp(4),dp(3));
-        b.setTextColor(TEXT); b.setBackground(glassShape(primary?Color.argb(95,35,226,244):BUTTON, primary?Color.argb(235,35,226,244):Color.argb(150,35,226,244),1,12)); b.setElevation(dp(5)); return b;
+        Button b = new Button(this);
+        b.setText(BotnaI18n.buttonText(this, title)); b.setTextSize(12); b.setAllCaps(false);
+        b.setPadding(dp(5), dp(4), dp(5), dp(4)); b.setTextColor(TEXT);
+        android.graphics.drawable.GradientDrawable glass = new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                primary
+                        ? new int[]{Color.argb(238, 19, 116, 150), Color.argb(245, 12, 67, 112)}
+                        : new int[]{Color.argb(225, 25, 62, 91), Color.argb(232, 10, 27, 47)});
+        glass.setCornerRadius(dp(12));
+        glass.setStroke(dp(1), primary ? Color.argb(250, 35, 226, 244) : Color.argb(175, 35, 226, 244));
+        b.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Color.argb(95, 115, 239, 255)), glass, null));
+        b.setElevation(dp(4));
+        return b;
     }
     private TextView label(String value,int size,int color,boolean bold) {
-        TextView t=new TextView(this); t.setText(value); t.setTextSize(size); t.setTextColor(color); t.setGravity(Gravity.CENTER_VERTICAL); if(bold)t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD); return t;
+        TextView t=new TextView(this); t.setText(BotnaI18n.headingText(this, value, bold)); t.setTextSize(size); t.setTextColor(color); t.setGravity(Gravity.CENTER_VERTICAL); BotnaI18n.applyDirection(this, t); if(bold)t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD); return t;
     }
     private android.graphics.drawable.GradientDrawable glassShape(int fill,int stroke,int width,int radius) {
         android.graphics.drawable.GradientDrawable d=new android.graphics.drawable.GradientDrawable(); d.setColor(fill); d.setCornerRadius(dp(radius)); if(width>0)d.setStroke(dp(width),stroke); return d;
