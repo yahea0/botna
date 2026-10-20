@@ -8,7 +8,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Lightweight in-app localization for the Java-built UI. User-authored scripts are never translated. */
 public final class BotnaI18n {
     private static final String PREFS = "botna_settings";
     private static final String KEY_LANGUAGE = "ui_language";
@@ -284,7 +283,7 @@ public final class BotnaI18n {
     private static void put(Map<String, String> map, String ar, String en) { map.put(ar, en); }
 
     public static boolean isEnglish(Context context) {
-        // On Android 13+, the per-app language chosen in Android Settings takes precedence over the in-app cache.
+
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             try {
                 android.app.LocaleManager manager = context.getSystemService(android.app.LocaleManager.class);
@@ -308,7 +307,7 @@ public final class BotnaI18n {
     public static void setLanguage(Context context, String language) {
         String selected = "en".equalsIgnoreCase(language) ? "en" : "ar";
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_LANGUAGE, selected).apply();
-        // On Android 13+, also synchronize the in-app choice with Android's per-app language setting.
+
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             try {
                 android.app.LocaleManager manager = context.getSystemService(android.app.LocaleManager.class);
