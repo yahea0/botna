@@ -45,10 +45,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.security.MessageDigest;
 
-/**
- * Provider-agnostic Arabic/Pale​stinian natural-language plan compiler.
- * AI output is validated JSON data (never Java, shell, JS, or arbitrary executable code).
- */
 public final class BotnaAICompiler {
     public static final String PREFS = "botna_settings";
     private static final String PROVIDER_KEY = "ai_provider_id_v2";
@@ -57,7 +53,7 @@ public final class BotnaAICompiler {
     private static final String KEY_COOLDOWN_PREFIX = "ai_key_cooldown_until_v1_";
 
     public static final String PROVIDER_GITHUB_MODELS = "github_models";
-    public static final String PROVIDER_OPENAI_COMPAT = "openai_compatible"; // legacy/custom-compatible profile
+    public static final String PROVIDER_OPENAI_COMPAT = "openai_compatible";
     public static final String PROVIDER_DEEPSEEK = "deepseek";
     public static final String PROVIDER_OPENROUTER = "openrouter";
     public static final String PROVIDER_GROQ = "groq";
@@ -94,9 +90,9 @@ public final class BotnaAICompiler {
             if (PROVIDER_GITHUB_MODELS.equals(saved.trim())) return PROVIDER_GEMINI;
             return saved.trim();
         }
-        // Keep older installations using an existing OpenAI key on the old endpoint.
+
         if (!BotnaKeyVault.load(context).isEmpty()) return PROVIDER_OPENAI_RESPONSES;
-        // GitHub Models is retired; use the separate Gemini profile for fresh installs.
+
         return PROVIDER_GEMINI;
     }
 
@@ -158,7 +154,6 @@ public final class BotnaAICompiler {
         if (!ok) throw new IllegalStateException("تعذر حفظ إعدادات مزود الذكاء الاصطناعي");
     }
 
-    /** Legacy caller interface; the optional screenshot supplies current screen context to vision-capable models. */
     public static JSONObject compile(Context context, String instructions, JSONArray library) throws Exception {
         return compile(context, instructions, library, null);
     }
@@ -234,7 +229,6 @@ public final class BotnaAICompiler {
         throw new IllegalStateException("لم ينجح أي مفتاح محفوظ لهذا المزوّد.");
     }
 
-    /** Asks for exactly one next action from a live screen, enabling a screenshot-driven agent loop. */
     public static JSONObject compileSmartNext(Context context, String goal, JSONArray history, Bitmap screenContext) throws Exception {
         return compileSmartNext(context, goal, history, screenContext, "");
     }
@@ -285,8 +279,6 @@ public final class BotnaAICompiler {
                 || message.contains("invalid api key") || message.contains("unauthorized") || message.contains("too many requests");
     }
 
-    /** Rate limits are cooled down per key so repeated agent screenshots do not hammer an exhausted quota. */
-    /** Returns true only for transient per-minute/request pressure, never daily/project quota exhaustion. */
     public static boolean isTransientRateLimitFailure(String message) {
         String lower = String.valueOf(message == null ? "" : message).toLowerCase(Locale.ROOT);
         if (lower.isEmpty()) return false;
@@ -306,7 +298,6 @@ public final class BotnaAICompiler {
                 || lower.contains("timed out") || lower.contains("timeout");
     }
 
-    /** Bounded exponential backoff. Returns -1 when the provider asks us to wait too long to retry inside a task. */
     public static long retryDelayMillis(String message, int attempt) {
         String lower = String.valueOf(message == null ? "" : message).toLowerCase(Locale.ROOT);
         Matcher retry = Pattern.compile("retry\\s+in\\s+(?:(\\d+)h)?\\s*(?:(\\d+)m)?\\s*(?:(\\d+(?:\\.\\d+)?)s)?", Pattern.CASE_INSENSITIVE).matcher(lower);
@@ -558,7 +549,7 @@ public final class BotnaAICompiler {
         Bitmap scaled = source;
         boolean copied = false;
         int maxSide = Math.max(source.getWidth(), source.getHeight());
-        // Keep enough resolution for small controls/text on tall phone screens while cutting JPEG payload.
+
         if (maxSide > 1440) {
             float ratio = 1440f / maxSide;
             scaled = Bitmap.createScaledBitmap(source, Math.max(1, Math.round(source.getWidth() * ratio)), Math.max(1, Math.round(source.getHeight() * ratio)), true);
@@ -646,7 +637,6 @@ public final class BotnaAICompiler {
         }
     }
 
-    /** Makes a real non-executing round-trip to validate the currently entered provider profile. */
     public static String testConnection(String provider, String endpoint, String apiKey, String model) throws Exception {
         String id = normalizeProviderId(provider);
         if (endpoint == null || endpoint.trim().isEmpty()) throw new IllegalArgumentException("رابط API فارغ.");
@@ -679,7 +669,6 @@ public final class BotnaAICompiler {
         }
     }
 
-    /** Settings UI; API credentials are stored per profile and encrypted using Android Keystore. */
     public static void showSettingsDialog(Context context, boolean accessibilityOverlay, Runnable onSaved) {
         final String[] ids = { PROVIDER_DEEPSEEK, PROVIDER_OPENROUTER, PROVIDER_GROQ,
                 PROVIDER_OPENAI_RESPONSES, PROVIDER_ANTHROPIC, PROVIDER_GEMINI,
@@ -717,7 +706,7 @@ public final class BotnaAICompiler {
 
         EditText endpoint = new EditText(context); endpoint.setSingleLine(true); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         endpoint.setHint(BotnaI18n.translate(context, "رابط API الكامل أو عنوان الجذر لـ Gemini")); styleInput(context, endpoint, pad);
-        Button endpointPicker = smallGlassButton(context, "روابط");
+        Button endpointPicker = smallGlassButton(context, "🔗 روابط");
         LinearLayout endpointRow = new LinearLayout(context); endpointRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams endpointFieldLp = new LinearLayout.LayoutParams(0, -2, 1f); endpointRow.addView(endpoint, endpointFieldLp);
         LinearLayout.LayoutParams endpointButtonLp = new LinearLayout.LayoutParams(Math.round(76 * context.getResources().getDisplayMetrics().density), -2);
@@ -726,7 +715,7 @@ public final class BotnaAICompiler {
 
         EditText model = new EditText(context); model.setSingleLine(true); model.setInputType(InputType.TYPE_CLASS_TEXT);
         model.setHint(BotnaI18n.translate(context, "اسم النموذج كما يقدمه المزوّد")); styleInput(context, model, pad);
-        Button modelPicker = smallGlassButton(context, "النماذج");
+        Button modelPicker = smallGlassButton(context, "🧠 النماذج");
         LinearLayout modelRow = new LinearLayout(context); modelRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams modelFieldLp = new LinearLayout.LayoutParams(0, -2, 1f); modelRow.addView(model, modelFieldLp);
         LinearLayout.LayoutParams modelButtonLp = new LinearLayout.LayoutParams(Math.round(86 * context.getResources().getDisplayMetrics().density), -2);
@@ -767,11 +756,17 @@ public final class BotnaAICompiler {
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2); helpLp.topMargin = pad / 3; container.addView(help, helpLp);
 
         Button testConnectionButton = new Button(context);
-        testConnectionButton.setText(BotnaI18n.buttonText(context, "اختبار الاتصال دون تنفيذ أي خطوة"));
+        testConnectionButton.setText("🔌 " + BotnaI18n.buttonText(context, "اختبار الاتصال دون تنفيذ أي خطوة"));
         testConnectionButton.setTextSize(13);
         testConnectionButton.setAllCaps(false);
         testConnectionButton.setTextColor(TEXT);
-        testConnectionButton.setBackground(shape(context, Color.argb(95, 35, 226, 244), CYAN));
+        android.graphics.drawable.GradientDrawable testGlass = new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.argb(232, 18, 101, 151), Color.argb(240, 8, 38, 72)});
+        testGlass.setCornerRadius(Math.round(14 * context.getResources().getDisplayMetrics().density));
+        testGlass.setStroke(Math.max(1, Math.round(context.getResources().getDisplayMetrics().density)), CYAN);
+        testConnectionButton.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Color.argb(100, 120, 240, 255)), testGlass, null));
         LinearLayout.LayoutParams testButtonLp = new LinearLayout.LayoutParams(-1, -2);
         testButtonLp.topMargin = pad / 2;
         container.addView(testConnectionButton, testButtonLp);
@@ -939,7 +934,6 @@ public final class BotnaAICompiler {
             }, "Botna-Provider-Test").start();
         });
 
-        // Keep primary actions outside the scroll area so they remain visible above the keyboard.
         ScrollView settingsScroll = new ScrollView(context);
         settingsScroll.setFillViewport(false);
         settingsScroll.setVerticalScrollBarEnabled(true);
@@ -949,10 +943,28 @@ public final class BotnaAICompiler {
 
         LinearLayout dialogRoot = new LinearLayout(context);
         dialogRoot.setOrientation(LinearLayout.VERTICAL);
-        dialogRoot.setPadding(0, 0, 0, 0);
+        int headPad = Math.round(6 * context.getResources().getDisplayMetrics().density);
+        dialogRoot.setPadding(headPad, headPad, headPad, headPad);
+        LinearLayout settingsHeader = new LinearLayout(context);
+        settingsHeader.setOrientation(LinearLayout.HORIZONTAL);
+        settingsHeader.setGravity(Gravity.CENTER_VERTICAL);
+        TextView settingsTitle = new TextView(context);
+        settingsTitle.setText(BotnaI18n.translate(context, "مركز إعدادات مزوّدي الذكاء الاصطناعي"));
+        settingsTitle.setTextColor(TEXT);
+        settingsTitle.setTextSize(15);
+        settingsTitle.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        settingsHeader.addView(settingsTitle, new LinearLayout.LayoutParams(0, Math.round(44 * context.getResources().getDisplayMetrics().density), 1f));
+        Button backSettingsButton = smallGlassButton(context, "↩");
+        Button closeSettingsButton = smallGlassButton(context, "×");
+        LinearLayout.LayoutParams headerBtnLp = new LinearLayout.LayoutParams(Math.round(40 * context.getResources().getDisplayMetrics().density), Math.round(40 * context.getResources().getDisplayMetrics().density));
+        settingsHeader.addView(backSettingsButton, headerBtnLp);
+        LinearLayout.LayoutParams closeHeaderLp = new LinearLayout.LayoutParams(headerBtnLp);
+        closeHeaderLp.leftMargin = headPad / 2;
+        settingsHeader.addView(closeSettingsButton, closeHeaderLp);
+        dialogRoot.addView(settingsHeader, new LinearLayout.LayoutParams(-1, -2));
         dialogRoot.addView(settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        Button saveSettingsButton = smallGlassButton(context, "حفظ الإعدادات");
+        Button saveSettingsButton = smallGlassButton(context, "💾 حفظ الإعدادات");
         saveSettingsButton.setTextSize(14);
         LinearLayout.LayoutParams saveActionLp = new LinearLayout.LayoutParams(-1, Math.round(48 * context.getResources().getDisplayMetrics().density));
         saveActionLp.leftMargin = pad / 2; saveActionLp.rightMargin = pad / 2; saveActionLp.topMargin = pad / 4;
@@ -960,19 +972,14 @@ public final class BotnaAICompiler {
 
         LinearLayout secondaryActions = new LinearLayout(context);
         secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
-        Button clearKeysButton = smallGlassButton(context, "مسح مفاتيح المزوّد");
+        Button clearKeysButton = smallGlassButton(context, "🔑 مسح مفاتيح المزوّد");
         clearKeysButton.setTextSize(11);
-        Button closeSettingsButton = smallGlassButton(context, "إغلاق");
-        closeSettingsButton.setTextSize(12);
-        secondaryActions.addView(clearKeysButton, new LinearLayout.LayoutParams(0, Math.round(44 * context.getResources().getDisplayMetrics().density), 1f));
-        LinearLayout.LayoutParams closeActionLp = new LinearLayout.LayoutParams(0, Math.round(44 * context.getResources().getDisplayMetrics().density), 1f);
-        closeActionLp.leftMargin = pad / 3; secondaryActions.addView(closeSettingsButton, closeActionLp);
+        secondaryActions.addView(clearKeysButton, new LinearLayout.LayoutParams(-1, Math.round(44 * context.getResources().getDisplayMetrics().density)));
         LinearLayout.LayoutParams secondaryActionsLp = new LinearLayout.LayoutParams(-1, -2);
         secondaryActionsLp.leftMargin = pad / 2; secondaryActionsLp.rightMargin = pad / 2; secondaryActionsLp.topMargin = pad / 4; secondaryActionsLp.bottomMargin = pad / 3;
         dialogRoot.addView(secondaryActions, secondaryActionsLp);
 
-        AlertDialog dialog = new AlertDialog.Builder(context).setTitle(BotnaI18n.translate(context, "مركز إعدادات مزوّدي الذكاء الاصطناعي"))
-                .setView(dialogRoot).create();
+        AlertDialog dialog = new AlertDialog.Builder(context).setView(dialogRoot).create();
         try {
             if (dialog.getWindow() != null && accessibilityOverlay) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
             if (dialog.getWindow() != null) dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
@@ -985,6 +992,7 @@ public final class BotnaAICompiler {
                 dialog.getWindow().setLayout(Math.max(1, width), Math.max(1, height));
             }
             closeSettingsButton.setOnClickListener(v -> dialog.dismiss());
+            backSettingsButton.setOnClickListener(v -> dialog.dismiss());
             View.OnFocusChangeListener scrollToFocusedInput = (v, focused) -> {
                 if (!focused) return;
                 settingsScroll.postDelayed(() -> {
@@ -1051,7 +1059,7 @@ public final class BotnaAICompiler {
 
     private static Button smallGlassButton(Context context, String label) {
         Button button = new Button(context);
-        button.setText(label); button.setAllCaps(false); button.setTextSize(10);
+        button.setText(label); button.setAllCaps(false); button.setTextSize(10); button.setSingleLine(false);
         button.setTextColor(TEXT);
         button.setPadding(2, 0, 2, 0);
         android.graphics.drawable.GradientDrawable glass = new android.graphics.drawable.GradientDrawable(
