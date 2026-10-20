@@ -36,6 +36,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.animation.OvershootInterpolator;
 import android.view.accessibility.AccessibilityEvent;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -80,7 +81,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
     public static final String PREF_PENDING_SMART_TASK = "pending_smart_task_v1";
     public static final String PREF_PENDING_SMART_TASK_ID = "pending_smart_task_id_v1";
 
-    /** Detect an explicit Internet download-speed test request that can run locally without AI quota. */
     public static boolean isLocalSpeedTestRequest(String source) {
         if (source == null) return false;
         String value = source.toLowerCase(Locale.ROOT)
@@ -181,7 +181,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private boolean customTestMode;
     private TextView resultLabel;
     private LinearLayout stepList;
-    // Search catalogue is rebuilt with the panel so each result always invokes the current command action.
+
     private final List<CommandEntry> commandCatalog = new ArrayList<>();
     private int lastActionResult = 0;
     private int panelRestoreY;
@@ -330,7 +330,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         super.onDestroy();
     }
 
-    // ---------------- Floating control and glass interface ----------------
     private void showBubble() {
         if (wm == null || bubble != null || running || singleStepTesting) return;
         TextView b = new TextView(this);
@@ -390,19 +389,25 @@ public class BotnaAccessibilityService extends AccessibilityService {
         final WindowManager.LayoutParams animatedParams = bubbleParams;
         final int startX = animatedParams.x, startY = animatedParams.y;
         ValueAnimator magnet = ValueAnimator.ofFloat(0f, 1f);
-        magnet.setDuration(190L);
+        magnet.setDuration(430L);
+        magnet.setInterpolator(new OvershootInterpolator(1.65f));
         magnet.addUpdateListener(animation -> {
             if (bubble != animatedBubble || bubbleParams != animatedParams) return;
             float t = (float) animation.getAnimatedValue();
             animatedParams.x = startX + Math.round((targetX - startX) * t);
             animatedParams.y = startY + Math.round((targetY - startY) * t);
+            float pulse = (float) Math.sin(Math.min(1f, Math.max(0f, t)) * Math.PI);
+            animatedBubble.setScaleX(1f + pulse * 0.075f);
+            animatedBubble.setScaleY(1f - pulse * 0.055f);
             try { wm.updateViewLayout(animatedBubble, animatedParams); } catch (Exception ignored) { }
         });
         magnet.addListener(new AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(Animator animation) {
                 if (bubble != animatedBubble || bubbleParams != animatedParams) return;
-                animatedParams.x = targetX; animatedParams.y = targetY;
+                animatedParams.x = targetX;
+                animatedParams.y = targetY;
                 try { wm.updateViewLayout(animatedBubble, animatedParams); } catch (Exception ignored) { }
+                animatedBubble.animate().scaleX(1f).scaleY(1f).setDuration(150L).start();
                 getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).edit()
                         .putInt("bubble_side", side).putInt("bubble_y", targetY).apply();
             }
@@ -410,14 +415,73 @@ public class BotnaAccessibilityService extends AccessibilityService {
         magnet.start();
     }
 
-    private void togglePanel() { if (panelVisible) hidePanel(); else showPanel(); }
+    private void revealBubble(Runnable afterReveal) {
+        if (bubble == null || bubbleParams == null || wm == null) {
+            if (afterReveal != null) afterReveal.run();
+            return;
+        }
+        android.util.DisplayMetrics dm = realScreenMetrics();
+        int size = bubbleParams.width;
+        int currentX = bubbleParams.x;
+        int visibleX = currentX < 0 ? 0 : (currentX > dm.widthPixels - size ? dm.widthPixels - size : currentX);
+        if (visibleX == currentX) {
+            if (afterReveal != null) afterReveal.run();
+            return;
+        }
+        final View targetView = bubble;
+        final WindowManager.LayoutParams targetParams = bubbleParams;
+        ValueAnimator reveal = ValueAnimator.ofFloat(0f, 1f);
+        int startX = targetParams.x;
+        int startY = targetParams.y;
+        int endX = visibleX;
+        reveal.setDuration(310L);
+        reveal.setInterpolator(new OvershootInterpolator(1.35f));
+        reveal.addUpdateListener(a -> {
+            if (bubble != targetView || bubbleParams != targetParams) return;
+            float t = (float) a.getAnimatedValue();
+            targetParams.x = startX + Math.round((endX - startX) * t);
+            targetParams.y = startY;
+            float pulse = (float) Math.sin(Math.min(1f, Math.max(0f, t)) * Math.PI);
+            targetView.setScaleX(1f + pulse * 0.08f);
+            targetView.setScaleY(1f - pulse * 0.06f);
+            try { wm.updateViewLayout(targetView, targetParams); } catch (Exception ignored) { }
+        });
+        reveal.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                if (bubble != targetView || bubbleParams != targetParams) return;
+                targetParams.x = endX;
+                targetView.animate().scaleX(1f).scaleY(1f).setDuration(130L).withEndAction(() -> {
+                    if (bubble == targetView && afterReveal != null) afterReveal.run();
+                }).start();
+                try { wm.updateViewLayout(targetView, targetParams); } catch (Exception ignored) { }
+            }
+        });
+        reveal.start();
+    }
+
+    private void dockBubbleToSide() {
+        if (bubble == null || bubbleParams == null || wm == null) return;
+        android.util.DisplayMetrics dm = realScreenMetrics();
+        int size = bubbleParams.width;
+        int side = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE).getInt("bubble_side", bubbleParams.x < 0 ? 0 : 1);
+        int dockX = side == 0 ? -size / 2 : dm.widthPixels - size / 2;
+        int dockY = clampInt(bubbleParams.y, 0, Math.max(0, dm.heightPixels - size));
+        animateBubbleDock(dockX, dockY, side);
+    }
+
+    private void togglePanel() {
+        if (panelVisible) {
+            hidePanel();
+            dockBubbleToSide();
+        } else {
+            revealBubble(this::showPanel);
+        }
+    }
 
     private void showPanel() {
         if (wm == null || panelVisible || running || singleStepTesting) return;
         commandCatalog.clear();
 
-        // A fixed top header plus one full-content ScrollView keeps controls
-        // near the top and makes every section reachable on short screens.
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -436,7 +500,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         Button hideList = button("إخفاء القائمة", false);
         hideList.setTextSize(11);
         hideList.setContentDescription(BotnaI18n.translate(this, "إخفاء القائمة والعودة إلى الزر العائم"));
-        hideList.setOnClickListener(v -> { hidePanel(); showBubble(); });
+        hideList.setOnClickListener(v -> { hidePanel(); dockBubbleToSide(); });
         header.addView(hideList, new LinearLayout.LayoutParams(dp(82), dp(42)));
         Button saveClose = button("حفظ", false);
         saveClose.setContentDescription(BotnaI18n.translate(this, "حفظ السكربت وإغلاق لوحة الأتمتة"));
@@ -451,7 +515,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         header.addView(close, closeLp);
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(42)));
 
-        // Keep the essential execution controls pinned above the scrollable command list.
         LinearLayout fixedRunRow = horizontal();
         Button fixedRun = button("▶ بدء", true);
         Button fixedPause = button("Ⅱ إيقاف/استكمال", false);
@@ -652,8 +715,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         addButton(addRow8, "مكتبة الصور", this::showImageLibrary);
         LinearLayout.LayoutParams add8Lp = wrap(); add8Lp.topMargin = dp(5); content.addView(addRow8, add8Lp);
 
-        // Network diagnostics and recovery primitives are explicit script steps;
-        // they never change Wi-Fi/router settings by themselves.
         LinearLayout addRow9 = horizontal();
         addButton(addRow9, "فحص الإنترنت", () -> promptText("عدد المحاولات والفاصل بالمللي ثانية (مثال 3,5000)", "3,5000", value -> {
             try {
@@ -717,7 +778,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         stLp.topMargin = dp(10);
         content.addView(stepsTitle, stLp);
 
-        // The steps list is inside the same ScrollView; avoid nested scroll areas.
         stepList = new LinearLayout(this);
         stepList.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams stepsLp = wrap();
@@ -840,7 +900,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
     }
 
-    // ---------------- Step storage and editing ----------------
     private JSONObject ensureScript() { return BotnaStore.activeScript(this); }
     private JSONObject addStep(String type, String label) {
         JSONObject script = ensureScript(); JSONArray steps = BotnaStore.steps(script);
@@ -1210,7 +1269,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void closeRecentAppsAsync(BooleanCallback callback) {
         if (!performGlobalAction(GLOBAL_ACTION_RECENTS)) { callback.done(false); return; }
-        // Wait for the launcher/Recents surface to become accessible, then only tap a visible label.
+
         handler.postDelayed(() -> callback.done(clickAnyTextOnScreen("إغلاق الكل", "إغلاق جميع التطبيقات", "مسح الكل", "Close all", "Clear all", "Close all apps")), 850);
     }
 
@@ -1234,8 +1293,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         if (root == null) return false;
         AccessibilityNodeInfo focused = null;
         try {
-            // Never clear an arbitrary editable field; only modify the field that currently
-            // owns input focus so a saved login/form value elsewhere is not wiped by accident.
+
             focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
             if (focused == null || !focused.isEditable() || !focused.isEnabled()) return false;
             Bundle args = new Bundle();
@@ -1256,7 +1314,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void changeImageTarget(JSONObject script, JSONObject step) {
-        // Keep the old target intact until the user successfully crops a replacement.
+
         cropStepId = step.optString("id");
         cropCreatedNewStep = false;
         cropPurpose = CROP_TARGET;
@@ -1461,7 +1519,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void showCustomDialog(String title, View content, Runnable positive) {
-        // A fixed footer stays reachable while the content scrolls and the IME is visible.
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(8), dp(4), dp(8), dp(4));
@@ -1511,12 +1569,70 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void showChoice(String title, String[] options, ChoiceCallback callback) {
         String[] displayed = options == null ? new String[0] : options.clone();
         for (int i = 0; i < displayed.length; i++) displayed[i] = BotnaI18n.translate(this, displayed[i]);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, title)).setItems(displayed, (d, which) -> callback.done(which)).create();
-        try { if (dialog.getWindow() != null) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY); dialog.show(); }
-        catch (Exception e) { Toast.makeText(this, "تعذر فتح قائمة الخيارات", Toast.LENGTH_LONG).show(); }
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(8), dp(5), dp(8), dp(8));
+        root.setBackground(glassShape(GLASS, Color.argb(225, 35, 226, 244), 1, 20));
+        LinearLayout header = horizontal();
+        TextView heading = label(BotnaI18n.translate(this, title), 15, TEXT, true);
+        header.addView(heading, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        Button back = button("↩", false);
+        back.setContentDescription(BotnaI18n.translate(this, "رجوع"));
+        Button close = button("×", false);
+        close.setContentDescription(BotnaI18n.translate(this, "إغلاق"));
+        header.addView(back, new LinearLayout.LayoutParams(dp(38), dp(40)));
+        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(38), dp(40));
+        closeLp.leftMargin = dp(4);
+        header.addView(close, closeLp);
+        root.addView(header, new LinearLayout.LayoutParams(-1, dp(42)));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.setVerticalScrollBarEnabled(true);
+        scroll.setClipToPadding(false);
+        LinearLayout optionsList = new LinearLayout(this);
+        optionsList.setOrientation(LinearLayout.VERTICAL);
+        optionsList.setPadding(0, dp(4), 0, dp(8));
+        scroll.addView(optionsList, new ScrollView.LayoutParams(-1, -2));
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(root).create();
+        back.setOnClickListener(v -> dialog.dismiss());
+        close.setOnClickListener(v -> dialog.dismiss());
+        for (int i = 0; i < displayed.length; i++) {
+            final int index = i;
+            Button option = button(displayed[i], true);
+            option.setSingleLine(false);
+            option.setMaxLines(3);
+            option.setMinHeight(dp(46));
+            option.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            LinearLayout.LayoutParams optionLp = new LinearLayout.LayoutParams(-1, -2);
+            optionLp.topMargin = dp(3);
+            optionsList.addView(option, optionLp);
+            option.setOnClickListener(v -> {
+                dialog.dismiss();
+                handler.post(() -> {
+                    if (callback != null) callback.done(index);
+                });
+            });
+        }
+        try {
+            Window w = dialog.getWindow();
+            if (w != null) {
+                w.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
+                w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                        | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+            }
+            dialog.show();
+            Window shown = dialog.getWindow();
+            if (shown != null) {
+                android.util.DisplayMetrics dm = realScreenMetrics();
+                shown.setLayout(Math.max(dp(260), Math.min(dp(540), dm.widthPixels - dp(24))),
+                        Math.max(dp(240), Math.min(dp(680), dm.heightPixels - dp(44))));
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "تعذر فتح قائمة الخيارات", Toast.LENGTH_LONG).show();
+        }
     }
 
-    // ---------------- Custom-step editor, Arabic command compiler and image library ----------------
     private void addCustomStep() {
         JSONObject step = addStep(TYPE_CUSTOM, "خطوة مخصصة — تحتاج إعدادًا");
         putString(step, "instructions", "");
@@ -1560,10 +1676,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         TextView visionPrivacy = label("عند التفعيل، تُرسل لقطة الشاشة إلى مزوّد الذكاء الاصطناعي عبر الإنترنت. أوقفه في الشاشات الحساسة.", 10, MUTED, false);
         LinearLayout.LayoutParams visionPrivacyLp = wrap(); visionPrivacyLp.topMargin = dp(1);
         content.addView(visionPrivacy, visionPrivacyLp);
-        // The app temporarily hides Botna overlays before taking this screenshot.
-        // The provider may reject images if the selected model is text-only.
-        // Save the draft while the user types. The previous translation is cleared immediately
-        // after the debounce so stale executable instructions can never run against new text.
+
         input.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
@@ -1651,7 +1764,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 if (pendingDraftSave[0] != null) { handler.removeCallbacks(pendingDraftSave[0]); pendingDraftSave[0] = null; }
                 if (command.isEmpty()) { report("اكتب الأمر في مربع النص أولًا، ثم اضغط تحليل وحفظ. النص الرمادي مثال توضيحي وليس أمرًا مكتوبًا."); return; }
 
-                // Persist the exact source text in its owning script before either compiler runs.
                 JSONObject owningScript = BotnaStore.getScript(this, scriptId);
                 JSONObject latest = findStepById(owningScript, stepId);
                 if (owningScript == null || latest == null) { report("لم يتم العثور على السكربت أو الخطوة المطلوب حفظها."); return; }
@@ -1660,8 +1772,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 JSONArray librarySnapshot = BotnaStore.imageLibrary(this);
                 boolean useAI = BotnaAICompiler.isConfigured(this);
                 boolean useScreen = useAI && includeScreenContext.isChecked();
-                // Close every Botna surface before collecting the screenshot. The editor must not
-                // be shown again until compilation is finished, otherwise it contaminates vision.
+
                 InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
                 if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
                 input.clearFocus();
@@ -1827,7 +1938,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         putString(step, "label", command == null || command.trim().isEmpty()
                 ? "خطوة مخصصة — تحتاج إعدادًا" : "خطوة مخصصة — نص محفوظ، يحتاج تحليل");
         try {
-            // Drafts never retain compiled output from an older source string.
+
             step.put("compiledSteps", new JSONArray());
             step.put("compileWarnings", new JSONArray());
         } catch (JSONException ignored) { }
@@ -2051,8 +2162,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void editCompiledBlockSettings(String parentId, int blockIndex) {
-        // Remove the block list first so the settings dialog is the active accessibility overlay.
-        // The step data is persisted separately, so closing the list does not lose edits.
+
         if (compiledBlockDialog != null && compiledBlockDialog.isShowing()) {
             try { compiledBlockDialog.dismiss(); } catch (Exception ignored) { }
         }
@@ -2128,12 +2238,11 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private JSONArray compileCustomInstructions(String original, List<String> warnings) {
         JSONArray result = new JSONArray();
         String clean = original.replace("\r", "\n");
-        // Preserve "ثم" within an inline image condition so every following action
-        // remains inside the IF block instead of being emitted after END_IF.
+
         final String conditionalThenToken = "__botna_conditional_then__";
         clean = clean.replaceAll("(?iu)((?:اذا|إذا)\\s+(?:وجدتها|وجدته|ظهرت|لقيتها|لم\\s+تجدها|لم\\s+تجده|ما\\s+لقيتها|لم\\s+تظهر).*?)\\s+ثم\\s+", "$1 " + conditionalThenToken + " ");
         clean = clean.replaceAll("(?iu)\\s+و(?=(?:ابحث|ابحثلي|ابحث\\s+لي|دور|دوّر|فتش|اكتب|اغلق|اقفل|اسحب|مرر|انقر|اضغط|افتح|افتحلي|شغل|اعمل|سوي|جيبلي|افحص|اختبر|تحقق|روح|اقرا|اقرأ))", ";");
-        // Other sequence connectors split the natural-language request into actions.
+
         String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+(?:ثم|وبعدين|بعدين|بعد ذلك|بعدها|ومن ثم)\\s+");
         Deque<String> structure = new ArrayDeque<>();
         for (String raw : clauses) {
@@ -2160,7 +2269,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 addCompiledInt(result,TYPE_REPEAT_START,"بدء تكرار ×"+count,"repeatCount",count); structure.push("REPEAT");
                 String rest=repeat.group(2).trim(); if(rest.isEmpty()) continue; norm=rest; clause=rest;
             }
-            // Inline image-success instruction, e.g. "تابع صورة رقم 4 بالمكتبة إذا وجدتها انتظر ثانيتين".
+
             java.util.regex.Matcher imageRef = java.util.regex.Pattern.compile("(?iu)(?:صورة|الهدف)\\s*(?:رقم\\s*)?(\\d+)").matcher(norm);
             if (imageRef.find()) {
                 int number=parseIntSafe(imageRef.group(1),-1);
@@ -2222,7 +2331,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void parseCustomAction(String command, JSONArray result, List<String> warnings, JSONArray library) {
         if (command == null || command.trim().isEmpty()) return;
         String rawCommand = command.trim();
-        // Normalize common Palestinian task-introducers without changing literal text to be typed.
+
         rawCommand = rawCommand.replaceFirst("(?iu)^\\s*(?:اعمللي|اعمل\\s+لي|اعملي|اعمل|سويلي|سوي\\s+لي|سوي|سوّي|جيبلي|جيب\\s+لي)\\s+(?=(?:بحث|فحص|اختبار|ابحث|دور|فتش|افحص|اختبر|افتح|افتحلي|انقر|اضغط|اكتب|امسح|اسحب|مرر|انتظر|تحقق|اقرا|اقرأ|قراءة))", "").trim();
         String norm = normalizeArabicCommand(rawCommand);
         if (isLocalSpeedTestRequest(rawCommand)) {
@@ -2261,7 +2370,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         java.util.regex.Matcher verifyText = java.util.regex.Pattern.compile("(?iu)^\\s*(?:تحقق من (?:ظهور|وجود)|تاكد من (?:ظهور|وجود)|تأكد من (?:ظهور|وجود)|افحص ظهور|تأكد ان|تاكد ان)\\s*(?:النص|كلمة|عبارة)?\\s*[:：]?\\s*[«\"']?(.*?)\\s*[»\"']?\\s*$").matcher(rawCommand);
         if(verifyText.matches() && !verifyText.group(1).trim().isEmpty()) { String value=verifyText.group(1).trim(); JSONObject st=compiledStep(TYPE_WAIT_TEXT,"التحقق من ظهور النص: "+value);putString(st,"value",value);putInt(st,"attempts",1);putInt(st,"intervalMs",250);result.put(st);return; }
         if (norm.contains("اضغط انتر") || norm.contains("اضغط enter") || norm.contains("اضغط بحث") || norm.contains("نفذ البحث") || norm.contains("زر البحث") || norm.equals("انتر") || norm.equals("enter") || norm.equals("بحث") || norm.equals("تنفيذ البحث")) { addCompiled(result,TYPE_PRESS_ENTER,"تنفيذ Enter/بحث"); return; }
-        // Explicit online-search requests become a real browser search followed by accessible-text reading.
+
         boolean explicitWebSearch = norm.contains("عبر الانترنت") || norm.contains("عبر النت") || norm.contains("على الانترنت")
                 || norm.contains("على النت") || norm.contains("بالانترنت") || norm.contains("بالنت") || norm.contains("بحث بالويب")
                 || norm.contains("عن طريق الانترنت") || norm.contains("عبر الويب");
@@ -2446,7 +2555,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         return findLibraryImage(getLibrary(), id);
     }
 
-    /** Find the object in the very same JSONArray that will be persisted. */
     private JSONObject findLibraryImage(JSONArray lib, String id) {
         if (lib == null || id == null || id.isEmpty()) return null;
         for (int i = 0; i < lib.length(); i++) {
@@ -2514,7 +2622,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         catch(Exception e) { report("تعذر عرض تأكيد حذف صورة المكتبة."); }
     }
 
-    // ---------------- Point picker for absolute screen taps ----------------
     private android.util.DisplayMetrics realScreenMetrics() {
         android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
         try { if (wm != null) wm.getDefaultDisplay().getRealMetrics(metrics); }
@@ -2593,7 +2700,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         private float pointX, pointY;
         private final int initialXP, initialYP;
         private float downX, downY;
-        private int actionMode; // 0 point, 1 save, 2 copy, 3 cancel
+        private int actionMode;
         PointSelector(int xp, int yp) { super(BotnaAccessibilityService.this); initialXP=xp; initialYP=yp; setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
         @Override protected void onSizeChanged(int w, int h, int ow, int oh) { pointX = w * initialXP / 100f; pointY = h * initialYP / 100f; }
         @Override protected void onDraw(Canvas c) {
@@ -2646,11 +2753,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
     }
 
-    // ---------------- Screenshot crop with transparent resizable frame ----------------
     private void prepareCropAngle(JSONObject step) {
         if (step == null || !TYPE_IMAGE.equals(step.optString("type"))) return;
-        // This is the explicit, opt-in action for adding a variant to an existing step.
-        // The main “قص هدف” button below always creates an independent step.
+
         cropStepId = step.optString("id");
         cropCreatedNewStep = false;
         replaceImageTarget = false;
@@ -2659,7 +2764,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     }
 
     private void prepareCropStep() {
-        // Every “قص هدف” command creates a separate image step in sequence.
+
         JSONObject step = addStep(TYPE_IMAGE, "مطابقة صورة الهدف");
         initializeImageStepDefaults(step, false);
         cropStepId = step.optString("id");
@@ -2779,8 +2884,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(selection.bottom * sy)));
                 cropped = Bitmap.createBitmap(screenshot, left, top, right - left, bottom - top);
 
-                // Store a small margin around the original crop. Percentages allow the
-                // area to scale with the screenshot, and the margin tolerates slight movement.
                 int captureX = clampInt(Math.round(selection.left / Math.max(1f, viewWidth) * 100f) - 1, 0, 99);
                 int captureY = clampInt(Math.round(selection.top / Math.max(1f, viewHeight) * 100f) - 1, 0, 99);
                 int captureRight = clampInt(Math.round(selection.right / Math.max(1f, viewWidth) * 100f) + 1, captureX + 1, 100);
@@ -2923,7 +3026,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void cancelCrop(Bitmap screenshot) {
         replaceImageTarget = false;
         if (cropPurpose == CROP_TARGET) discardEmptyCreatedCropStep();
-        // Detach the view first; never recycle a bitmap while CropSelector can still draw it.
+
         View oldSelector = cropSelector;
         removeView(oldSelector);
         cropSelector = null;
@@ -2947,7 +3050,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         private final int purpose;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final RectF rect = new RectF();
-        private int mode = 0; // 0 create, 1..4 corners, 5 move, 6..9 edges, 10 save, 11 cancel
+        private int mode = 0;
         private float downX, downY;
         private final RectF initial = new RectF();
         private final float density;
@@ -2973,15 +3076,12 @@ public class BotnaAccessibilityService extends AccessibilityService {
             c.drawRect(0,0,getWidth(),rect.top,paint); c.drawRect(0,rect.bottom,getWidth(),getHeight(),paint);
             c.drawRect(0,rect.top,rect.left,rect.bottom,paint); c.drawRect(rect.right,rect.top,getWidth(),rect.bottom,paint);
             paint.setColor(CYAN); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.1f*density); c.drawRect(rect,paint);
-            // Only four small visible corner handles. Edge dragging remains available
-            // through invisible hit bands, avoiding decorative dots over tiny targets.
+
             paint.setStyle(Paint.Style.FILL); float r = 2.8f*density;
             paint.setColor(Color.argb(245, 28, 229, 244));
             c.drawCircle(rect.left,rect.top,r,paint); c.drawCircle(rect.right,rect.top,r,paint);
             c.drawCircle(rect.left,rect.bottom,r,paint); c.drawCircle(rect.right,rect.bottom,r,paint);
-            // Keep the action bar at the TOP, not the bottom. A bottom toolbar
-            // steals touch events from the lower crop edge and makes full-height
-            // selections unreliable on devices with a gesture/navigation area.
+
             paint.setColor(Color.argb(230,5,7,12)); paint.setStyle(Paint.Style.FILL);
             c.drawRoundRect(new RectF(8*density, 8*density, getWidth()-8*density, 49*density), 11*density,11*density,paint);
             float actionTop = 11*density, actionBottom = 46*density;
@@ -2999,8 +3099,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         private float distance(float x,float y,float a,float b) { float dx=x-a,dy=y-b; return (float)Math.sqrt(dx*dx+dy*dy); }
         private float clamp(float v,float min,float max) { return Math.max(min,Math.min(max,v)); }
         private int hitHandle(float x, float y) {
-            // Choose the nearest corner instead of checking corners in a fixed order.
-            // This keeps tiny selections resizable when their touch radii overlap.
+
             float hit=13*density;
             float[] ds = new float[]{distance(x,y,rect.left,rect.top), distance(x,y,rect.right,rect.top),
                     distance(x,y,rect.left,rect.bottom), distance(x,y,rect.right,rect.bottom)};
@@ -3018,10 +3117,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
             if(e.getAction()==MotionEvent.ACTION_DOWN) {
                 downX=x; downY=y; initial.set(rect);
                 int handle=hitHandle(x,y);
-                if(handle!=0) mode=handle; // Corner/edge hit zones take priority over controls.
+                if(handle!=0) mode=handle;
                 else if(y>=9*density && y<=48*density && x>=getWidth()-90*density) mode=10;
                 else if(y>=9*density && y<=48*density && x<=92*density) mode=11;
-                else if(y>=9*density && y<=48*density && !rect.contains(x,y)) mode=12; // ignore header gestures
+                else if(y>=9*density && y<=48*density && !rect.contains(x,y)) mode=12;
                 else if(rect.contains(x,y)) mode=5;
                 else mode=0;
                 return true;
@@ -3052,7 +3151,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
     }
 
-    // ---------------- Image matching and script execution ----------------
     private interface MatchCallback {
         void done(ImageMatcher.Result result, String error);
     }
@@ -3105,7 +3203,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private void restartScript() {
         if (!running) { runActiveScript(); return; }
-        executionGeneration++; // invalidate any screenshot/matcher callback from the old run
+        executionGeneration++;
         currentStepIndex = 0;
         currentBranches = new ArrayDeque<>();
         currentLoops = new ArrayDeque<>();
@@ -3376,8 +3474,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         boolean enabled = step.optBoolean("enabled", true);
         boolean activeBefore = branchAllowed(currentBranches) && loopsAllowed(currentLoops);
 
-        // Conditional markers always keep the structure balanced. Disabling an IF
-        // skips the complete conditional block; ELSE/END_IF remain structural.
         if (TYPE_IF_SUCCESS.equals(type) || TYPE_IF_FAIL.equals(type)) {
             boolean condition = TYPE_IF_SUCCESS.equals(type) ? lastStepSuccess : !lastStepSuccess;
             currentBranches.push(new Branch(activeBefore && enabled, condition));
@@ -3392,8 +3488,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
             scheduleNext(generation, 0); return;
         }
 
-        // Repeat blocks can be nested. Inactive or disabled loops still push a
-        // frame so their END marker cannot accidentally close an outer loop.
         if (TYPE_REPEAT_START.equals(type)) {
             int count = Math.max(1, step.optInt("repeatCount", 2));
             currentLoops.push(new LoopFrame(currentStepIndex, count, activeBefore && enabled));
@@ -3423,8 +3517,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         report("الخطوة " + (currentStepIndex + 1) + "/" + steps.length() + " — " + step.optString("label", type));
         executionInFlight = true;
-        // Keep controls available during the pre-action delay. Screenshot and
-        // gesture helpers hide them only at the moment they would obstruct the action.
+
         showRunControls();
         int beforeDelay = Math.max(0, Math.min(60000, step.optInt("beforeDelay", 0)));
         Runnable action = () -> {
@@ -3532,7 +3625,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private interface SpeedTestCallback { void done(boolean success, String message); }
 
-    /** Approximate download throughput only; this is not a full ping/upload/ISP certification test. */
     private void measureDownloadSpeedAsync(SpeedTestCallback callback) {
         try {
             networkExecutor.execute(() -> {
@@ -3722,7 +3814,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                     + "\nالإعدادات: " + (step == null ? "{}" : step.toString());
             logFailureWithScreenshot("execution", currentStepIndex, label, "فشلت الخطوة أثناء التنفيذ.", details, true);
         }
-        // A failed action gets a little extra time so the diagnostic screenshot can be captured before the next action changes the screen.
+
         int minimum = lastStepSuccess ? CONTROL_GAP_MS : 750;
         scheduleNext(generation, Math.max(minimum, configured));
     }
@@ -3922,8 +4014,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 retryImageOrFinish(step, attempt, generation, callback, false, "فشل التقاط الشاشة للمطابقة: " + error);
                 return;
             }
-            // The screen pixels have already been captured, so controls can safely
-            // reappear while OpenCV compares the bitmap in the background.
+
             if (running) showRunControls();
             findMatchAsync(screen, step, (match, matchError) -> {
                 if (generation != executionGeneration || !(running || singleStepTesting)) return;
@@ -4118,7 +4209,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     private interface NetworkProbeCallback { void done(boolean reachable); }
 
-    /** Make a real HTTP request and consume a small part of the response. The default endpoint is an expected HTTP 204 connectivity check. */
     private void probeInternetAsync(String customUrl, int timeoutMs, NetworkProbeCallback callback) {
         final String selected = customUrl == null || customUrl.trim().isEmpty()
                 ? "https://connectivitycheck.gstatic.com/generate_204" : customUrl.trim();
@@ -4246,8 +4336,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             if (focused != null) try { focused.recycle(); } catch (Exception ignored) { }
             if (root != null) try { root.recycle(); } catch (Exception ignored) { }
         }
-        // Do not require an application root: many keyboards expose the Search/Enter key
-        // in their own TYPE_INPUT_METHOD window, which can still be inspected independently.
+
         if (clickImeEnterAction()) return true;
         AccessibilityNodeInfo appRoot = findTargetRoot();
         if (appRoot != null) {
@@ -4352,8 +4441,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 target = findFirstEditableNode(root);
                 if (target != null) {
                     target.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-                    // A real click on the input usually opens the phone's keyboard before
-                    // setting/pasting text, while the automation remains independent of layout.
+
                     target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                 }
             }
@@ -4362,8 +4450,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
             if (target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true;
 
-            // Many custom fields reject ACTION_SET_TEXT but accept paste. This fallback
-            // writes full Unicode text (including Arabic) into the currently editable field.
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard == null) return false;
             clipboard.setPrimaryClip(ClipData.newPlainText("botna_temporary_text", value));
@@ -4547,7 +4633,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         return out.toString();
     }
 
-    // ---------------- Helpers and glass styling ----------------
     private void addButton(LinearLayout row, String title, Runnable action) {
         Button b = button(title, true);
         b.setMinHeight(dp(42));
@@ -4562,7 +4647,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         b.setOnClickListener(v -> { if (action != null) action.run(); });
     }
 
-    /** Shows a live-filtered catalogue of the same command actions used by the visible buttons. */
     private void showCommandSearchDialog() {
         if (commandCatalog.isEmpty()) {
             report("قائمة الأوامر غير جاهزة بعد. أعد فتح لوحة الأتمتة لتحديث قائمة الأوامر.");
@@ -4571,6 +4655,18 @@ public class BotnaAccessibilityService extends AccessibilityService {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(8), dp(4), dp(8), dp(4));
+        LinearLayout titleBar = horizontal();
+        TextView titleText = label(BotnaI18n.translate(this, "بحث عن أمر لإضافته"), 14, TEXT, true);
+        titleBar.addView(titleText, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        Button backTop = button("↩", false);
+        backTop.setContentDescription(BotnaI18n.translate(this, "رجوع"));
+        Button closeTop = button("×", false);
+        closeTop.setContentDescription(BotnaI18n.translate(this, "إغلاق البحث"));
+        titleBar.addView(backTop, new LinearLayout.LayoutParams(dp(38), dp(40)));
+        LinearLayout.LayoutParams closeTopLp = new LinearLayout.LayoutParams(dp(38), dp(40));
+        closeTopLp.setMargins(dp(4), 0, 0, 0);
+        titleBar.addView(closeTop, closeTopLp);
+        root.addView(titleBar, new LinearLayout.LayoutParams(-1, dp(42)));
         EditText query = new EditText(this);
         query.setSingleLine(true); query.setTextSize(15); query.setTextColor(TEXT);
         query.setHintTextColor(MUTED);
@@ -4578,7 +4674,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         BotnaI18n.applyDirection(this, query);
         query.setBackground(glassShape(BUTTON, CYAN, 1, 12));
         query.setPadding(dp(12), dp(8), dp(12), dp(8));
-        root.addView(query, new LinearLayout.LayoutParams(-1, dp(48)));
+        LinearLayout.LayoutParams queryLp = new LinearLayout.LayoutParams(-1, dp(48));
+        queryLp.topMargin = dp(5);
+        root.addView(query, queryLp);
         TextView count = label("كل الأوامر المتاحة", 11, MUTED, false);
         LinearLayout.LayoutParams countLp = wrap(); countLp.topMargin = dp(5); root.addView(count, countLp);
         ScrollView scroll = new ScrollView(this);
@@ -4587,10 +4685,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         scroll.addView(results, new ScrollView.LayoutParams(-1, -2));
         LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
         scrollLp.topMargin = dp(4); scrollLp.bottomMargin = dp(4); root.addView(scroll, scrollLp);
-        Button close = button("إغلاق البحث", false);
-        close.setBackground(glassShape(Color.argb(245, 17, 76, 137), CYAN, 2, 12));
-        root.addView(close, new LinearLayout.LayoutParams(-1, dp(42)));
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(BotnaI18n.translate(this, "بحث عن أمر لإضافته")).setView(root).create();
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(root).create();
         final AlertDialog[] owner = new AlertDialog[]{dialog};
         query.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -4599,12 +4694,13 @@ public class BotnaAccessibilityService extends AccessibilityService {
             }
             @Override public void afterTextChanged(Editable editable) { }
         });
-        close.setOnClickListener(v -> dialog.dismiss());
+        backTop.setOnClickListener(v -> dialog.dismiss());
+        closeTop.setOnClickListener(v -> dialog.dismiss());
         renderCommandSearchResults("", results, count, dialog);
         try {
             Window w = dialog.getWindow();
             if (w != null) {
-                // Must assign ACCESSIBILITY_OVERLAY before show(), otherwise the dialog can dismiss or hide the panel.
+
                 w.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY);
                 w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                         | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
@@ -4645,7 +4741,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
             results.addView(result, lp);
             result.setOnClickListener(v -> {
                 if (owner != null) owner.dismiss();
-                // Let the search dialog finish closing before a command opens its own prompt/dialog.
+
                 handler.post(() -> {
                     try { entry.action.run(); }
                     catch (RuntimeException ex) { report("تعذّر تنفيذ الأمر المحدد: " + ex.getMessage()); }
@@ -4667,7 +4763,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private String commandSearchIndex(String title) {
         String normalized = normalizeCommandSearch(title);
         StringBuilder index = new StringBuilder(normalized);
-        // Common Arabic variants/dialect words and English labels make the catalog easier to find.
+
         if (normalized.contains("كتابة نص")) index.append(" اكتب كتابة ادخال type text keyboard");
         if (normalized.contains("نقر نص")) index.append(" اضغط انقر كبس اضغط على زر tap click text");
         if (normalized.contains("نقر موقع")) index.append(" اضغط مكان احداثيات لمسة tap coordinate");
@@ -4702,9 +4798,59 @@ public class BotnaAccessibilityService extends AccessibilityService {
         CommandEntry(String title, Runnable action) { this.title = title; this.action = action; }
     }
     private LinearLayout horizontal() { LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL); BotnaI18n.applyDirection(this, l); return l; }
+    private String decorateButtonText(String original, String displayed) {
+        String visible = displayed == null ? (original == null ? "" : original) : displayed;
+        int start = 0;
+        while (start < visible.length() && Character.isWhitespace(visible.charAt(start))) start++;
+        if (start < visible.length()) {
+            int cp = visible.codePointAt(start);
+            int type = Character.getType(cp);
+            if (type == Character.OTHER_SYMBOL || type == Character.MATH_SYMBOL
+                    || type == Character.MODIFIER_SYMBOL) return visible;
+        }
+        String q = original == null ? "" : original.toLowerCase(Locale.ROOT);
+        String icon = "";
+        if (q.contains("سرعة") || q.contains("speed test") || q.contains("سرعة التنزيل")) icon = "📈 ";
+        else if (q.contains("انتظار") || q.contains("wait") || q.contains("تأخير")) icon = "⏳ ";
+        else if (q.contains("بحث") || q.contains("search") || q.contains("استعلام")) icon = "🔎 ";
+        else if (q.contains("كتابة") || q.contains("اكتب") || q.contains("type") || q.contains("مسح النص")) icon = "⌨️ ";
+        else if (q.contains("سحب") || q.contains("تمرير") || q.contains("swipe") || q.contains("scroll")) icon = "↕️ ";
+        else if (q.contains("نقر") || q.contains("اضغط") || q.contains("click") || q.contains("tap")) icon = "🎯 ";
+        else if (q.contains("قراءة") || q.contains("read screen") || q.contains("نصوص الشاشة")) icon = "👁️ ";
+        else if (q.contains("فحص") || q.contains("اختبار") || q.contains("check") || q.contains("test")) icon = "🔬 ";
+        else if (q.contains("صورة") || q.contains("image") || q.contains("قالب")) icon = "🖼️ ";
+        else if (q.contains("إشعار") || q.contains("اشعار") || q.contains("notification")) icon = "🔔 ";
+        else if (q.contains("تطبيق") || q.contains("app")) icon = "📱 ";
+        else if (q.contains("رابط") || q.contains("url") || q.contains("link")) icon = "🔗 ";
+        else if (q.contains("حفظ") || q.contains("save")) icon = "💾 ";
+        else if (q.contains("إغلاق") || q.contains("اغلاق") || q.contains("close")) icon = "✕ ";
+        else if (q.contains("حذف") || q.contains("delete")) icon = "🗑️ ";
+        else if (q.contains("رجوع") || q.contains("back")) icon = "↩️ ";
+        else if (q.contains("الرئيسية") || q.contains("home")) icon = "🏠 ";
+        else if (q.contains("تشغيل") || q.contains("بدء") || q.contains("run") || q.contains("start")) icon = "▶️ ";
+        else if (q.contains("إيقاف مؤقت") || q.contains("استكمال") || q.contains("pause") || q.contains("resume")) icon = "⏯️ ";
+        else if (q.contains("إيقاف") || q.contains("stop")) icon = "⏹️ ";
+        else if (q.contains("تكرار") || q.contains("repeat")) icon = "🔁 ";
+        else if (q.contains("شرط") || q.contains("if success") || q.contains("if fail")) icon = "🔀 ";
+        else if (q.contains("إعداد") || q.contains("setting") || q.contains("ضبط")) icon = "⚙️ ";
+        else if (q.contains("سجل") || q.contains("log")) icon = "🧾 ";
+        else if (q.contains("سكربت") || q.contains("script")) icon = "📚 ";
+        else if (q.contains("وكيل") || q.contains("agent") || q.contains("مهمة") || q.contains("task")) icon = "🤖 ";
+        else if (q.contains("لغة") || q.contains("language")) icon = "🌐 ";
+        else if (q.contains("خصوصية") || q.contains("privacy")) icon = "🛡️ ";
+        else if (q.contains("تعديل") || q.contains("edit")) icon = "✏️ ";
+        else if (q.contains("مفتاح") || q.contains("key")) icon = "🔑 ";
+        else if (q.contains("تواصل") || q.contains("telegram") || q.contains("contact")) icon = "✉️ ";
+        else if (q.contains("إنشاء") || q.contains("انشاء") || q.contains("create") || q.contains("جديد")) icon = "➕ ";
+        else if (q.contains("إخفاء") || q.contains("اخفاء") || q.contains("hide")) icon = "🙈 ";
+        else if (q.contains("إظهار") || q.contains("اظهار") || q.contains("show")) icon = "👁️ ";
+        else if (q.contains("مساعدة") || q.contains("دليل") || q.contains("help") || q.contains("guide")) icon = "❔ ";
+        return icon.isEmpty() ? "✧ " + visible : icon + visible;
+    }
+
     private Button button(String title, boolean primary) {
         Button b = new Button(this);
-        b.setText(BotnaI18n.buttonText(this, title)); b.setTextSize(12); b.setAllCaps(false);
+        b.setText(decorateButtonText(title, BotnaI18n.buttonText(this, title))); b.setTextSize(12); b.setAllCaps(false);
         b.setPadding(dp(5), dp(4), dp(5), dp(4)); b.setTextColor(TEXT);
         android.graphics.drawable.GradientDrawable glass = new android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
@@ -4847,7 +4993,6 @@ public class BotnaAccessibilityService extends AccessibilityService {
         catch (Exception ignored) { return 0; }
     }
 
-    /** Compact capability/state summary given to the model; deliberately excludes API keys and endpoints. */
     private String buildBotnaApplicationContext(String scriptId, String focusedStepId) {
         StringBuilder out = new StringBuilder(2500);
         out.append("\n\n--- سياق تطبيق Botna الفعلي ---\n")
@@ -4940,8 +5085,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
                                     + (plan == null ? "لا يوجد رد مفهوم." : plan.optString("reason", "راجع تحذيرات النموذج."));
                         }
                     } catch (Exception ex) { error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage(); }
-                    // Keep the clean current screenshot alive until the UI callback has either logged it
-                    // or passed it to the next action. This associates a planning failure with the exact screen.
+
                     JSONObject finalPlan = plan; JSONArray finalAction = executable; String finalError = error;
                     handler.post(() -> {
                         removeView(smartPlanningControls); smartPlanningControls = null;
