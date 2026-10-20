@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">بوتنا — الأتمتة الذكية</string>
-    <string name="accessibility_service_label">بوتنا — خدمة الأتمتة</string>
+    <string name="app_name">Botna</string>
+    <string name="accessibility_service_label">Botna — خدمة الأتمتة</string>
     <string name="accessibility_description">تتيح خدمة بوتنا قراءة عناصر الواجهة والتقاط الشاشة بعد تفعيلك للخدمة، وحفظ قوالب الصور محليًا، وتنفيذ خطوات الأتمتة التي أنشأتها يدويًا.</string>
 </resources>
