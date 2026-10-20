@@ -13,10 +13,6 @@ import org.opencv.imgproc.Imgproc;
 import java.util.List;
 import java.util.Map;
 
-/**
- * OpenCV native template matching. Image processing runs in optimized native code;
- * callers should invoke find() from a background thread.
- */
 public final class ImageMatcher {
     private static volatile boolean initialized;
     private static volatile boolean initializationAttempted;
@@ -66,7 +62,6 @@ public final class ImageMatcher {
         return find(screen, templates, threshold, null);
     }
 
-    /** Match using a per-template acceptance threshold while preserving the best raw score for diagnostics. */
     public static Result find(Bitmap screen, List<NamedBitmap> templates, int threshold,
                               Map<String, Integer> perTemplateThresholds) {
         if (screen == null || screen.isRecycled() || templates == null || templates.isEmpty()) {
@@ -134,7 +129,7 @@ public final class ImageMatcher {
                         Core.meanStdDev(templateGrayFull, mean, std);
                         double[] sd = std.toArray();
                         if (sd.length > 0 && sd[0] < 1.5) {
-                            // Nearly uniform templates generate unreliable high scores.
+
                             continue;
                         }
                     } finally {
