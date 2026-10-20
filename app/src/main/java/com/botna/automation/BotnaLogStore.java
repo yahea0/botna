@@ -16,7 +16,6 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** Private, bounded diagnostic log storage. Screenshots never leave app-private storage. */
 public final class BotnaLogStore {
     private static final String PREFS = "botna_settings";
     private static final String LOGS_KEY = "diagnostic_logs_v1";
