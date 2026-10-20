@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style
-        name="AppTheme"
-        parent="android:style/Theme.Material.NoActionBar">
-
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#23E2F4</item>
         <item name="android:statusBarColor">#05070C</item>
@@ -11,6 +8,15 @@
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowBackground">#05070C</item>
-
+        <item name="android:alertDialogTheme">@style/BotnaDialogTheme</item>
+    </style>
+    <style name="BotnaDialogTheme" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#23E2F4</item>
+        <item name="android:colorBackground">#0D111A</item>
+        <item name="android:windowBackground">@drawable/dialog_glass_bg</item>
+        <item name="android:textColorPrimary">#EBF6FF</item>
+        <item name="android:textColorSecondary">#96AEC3</item>
+        <item name="android:windowMinWidthMajor">90%</item>
+        <item name="android:windowMinWidthMinor">90%</item>
     </style>
 </resources>
