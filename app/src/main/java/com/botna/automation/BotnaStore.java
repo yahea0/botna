@@ -11,7 +11,6 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** Local-only storage for Botna scripts and step definitions. */
 public final class BotnaStore {
 
     public static final String PREFS = "botna_settings";
@@ -45,7 +44,6 @@ public final class BotnaStore {
                 .commit();
     }
 
-    /** Images owned by the custom-step library, separate from per-step targets. */
     public static JSONArray imageLibrary(Context context) {
         String raw = prefs(context).getString(KEY_IMAGE_LIBRARY, "[]");
         try { return new JSONArray(raw); }
@@ -86,7 +84,6 @@ public final class BotnaStore {
         }
     }
 
-    /** Rename a saved script without changing its ID or step definitions. */
     public static synchronized boolean renameScript(Context context, String id, String requestedName) {
         if (context == null || id == null || id.trim().isEmpty()) return false;
         String name = requestedName == null ? "" : requestedName.trim();
@@ -103,7 +100,7 @@ public final class BotnaStore {
             } catch (JSONException e) {
                 return false;
             }
-            // Return the actual persistent write result so the UI can report failures accurately.
+
             return prefs(context).edit().putString(KEY_SCRIPTS, all.toString()).commit();
         }
         return false;
@@ -224,8 +221,6 @@ public final class BotnaStore {
                     script.optString("id")
                             .equals(item.optString("id"))) {
 
-                // إصلاح الخطأ: JSONArray.put(index, value)
-                // قد يرمي JSONException، لذلك نعالجه هنا.
                 try {
                     all.put(i, script);
                 } catch (JSONException e) {
