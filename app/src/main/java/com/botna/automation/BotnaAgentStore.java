@@ -10,7 +10,6 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** Persists reusable smart-agent goals, their generated scripts, and an explanatory message timeline. */
 public final class BotnaAgentStore {
     private static final String PREFS = BotnaStore.PREFS;
     private static final String TASKS_KEY = "smart_agent_tasks_v1";
@@ -85,7 +84,6 @@ public final class BotnaAgentStore {
         addMessage(context, id, "user", "تعديل المهمة", "تم تحديث وصف المهمة المحفوظة.", -1, true);
     }
 
-    /** Clears the prior run's generated actions before replaying the saved goal. */
     public static synchronized String prepareRun(Context context, String id) {
         JSONObject item = getTask(context, id);
         if (item == null) return "";
