@@ -26,12 +26,13 @@ public final class BotnaKeyVault {
     private static final String LEGACY_ALIAS = "botna_ai_api_key_v1";
     private static final String V2_ALIAS_PREFIX = "botna_ai_key_v2_";
     private static final String V3_ALIAS_PREFIX = "botna_ai_key_v3_";
+    private static final String V4_ALIAS_PREFIX = "botna_ai_key_v4_";
     private static final String PREFS = "botna_settings";
     private static final String LEGACY_KEY = "ai_api_key_encrypted_v1";
     private static final String V2_KEY_PREFIX = "ai_api_key_encrypted_v2_";
     private static final String V3_KEYS_PREFIX = "ai_api_keys_encrypted_v3_";
+    private static final String V4_KEYS_PREFIX = "ai_api_keys_encrypted_v4_";
     private static final String ACTIVE_PREFIX = "ai_api_key_active_v3_";
-    private static final int MAX_KEYS = 20;
 
     private BotnaKeyVault() { }
 
@@ -53,27 +54,29 @@ public final class BotnaKeyVault {
     public static synchronized void saveAll(Context context, String profileId, List<String> input) throws Exception {
         String id = safeId(profileId);
         LinkedHashSet<String> unique = new LinkedHashSet<>();
-        if (input != null) for (String candidate : input) {
-            String key = candidate == null ? "" : candidate.trim();
-            if (!key.isEmpty()) unique.add(key);
-            if (unique.size() >= MAX_KEYS) break;
-        }
-        JSONArray encrypted = new JSONArray();
-        int index = 0;
-        for (String key : unique) {
-            encrypted.put(encryptValue(V3_ALIAS_PREFIX + id + "_" + index, key));
-            index++;
+        if (input != null) {
+            for (String candidate : input) {
+                String key = candidate == null ? "" : candidate.trim();
+                if (!key.isEmpty()) unique.add(key);
+            }
         }
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = prefs.edit();
-        if (encrypted.length() == 0) {
-            editor.remove(V3_KEYS_PREFIX + id).remove(ACTIVE_PREFIX + id).remove(V2_KEY_PREFIX + id);
+        if (unique.isEmpty()) {
+            editor.remove(V4_KEYS_PREFIX + id)
+                    .remove(V3_KEYS_PREFIX + id)
+                    .remove(ACTIVE_PREFIX + id)
+                    .remove(V2_KEY_PREFIX + id);
             if ("openai_responses".equals(id)) editor.remove(LEGACY_KEY);
         } else {
-            editor.putString(V3_KEYS_PREFIX + id, encrypted.toString());
+            JSONArray encrypted = new JSONArray();
+            String alias = V4_ALIAS_PREFIX + id;
+            for (String key : unique) encrypted.put(encryptValue(alias, key));
             int active = prefs.getInt(ACTIVE_PREFIX + id, 0);
-            editor.putInt(ACTIVE_PREFIX + id, Math.max(0, Math.min(encrypted.length() - 1, active)));
-            editor.remove(V2_KEY_PREFIX + id);
+            editor.putString(V4_KEYS_PREFIX + id, encrypted.toString())
+                    .putInt(ACTIVE_PREFIX + id, Math.max(0, Math.min(encrypted.length() - 1, active)))
+                    .remove(V3_KEYS_PREFIX + id)
+                    .remove(V2_KEY_PREFIX + id);
             if ("openai_responses".equals(id)) editor.remove(LEGACY_KEY);
         }
         if (!editor.commit()) throw new IllegalStateException("تعذر حفظ مفاتيح هذا المزوّد مشفّرة.");
@@ -82,7 +85,20 @@ public final class BotnaKeyVault {
     public static synchronized ArrayList<String> loadAll(Context context, String profileId) {
         String id = safeId(profileId);
         ArrayList<String> keys = new ArrayList<>();
-        String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(V3_KEYS_PREFIX + id, "");
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String v4 = prefs.getString(V4_KEYS_PREFIX + id, "");
+        if (v4 != null && !v4.isEmpty()) {
+            try {
+                JSONArray values = new JSONArray(v4);
+                String alias = V4_ALIAS_PREFIX + id;
+                for (int i = 0; i < values.length(); i++) {
+                    String key = decryptValue(alias, values.optString(i, ""));
+                    if (!key.isEmpty() && !keys.contains(key)) keys.add(key);
+                }
+                if (!keys.isEmpty()) return keys;
+            } catch (JSONException ignored) { }
+        }
+        String raw = prefs.getString(V3_KEYS_PREFIX + id, "");
         if (raw != null && !raw.isEmpty()) {
             try {
                 JSONArray values = new JSONArray(raw);
@@ -106,7 +122,16 @@ public final class BotnaKeyVault {
         return keys.get(index);
     }
 
-    public static synchronized int count(Context context, String profileId) { return loadAll(context, profileId).size(); }
+    public static synchronized int count(Context context, String profileId) {
+        String id = safeId(profileId);
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String raw = prefs.getString(V4_KEYS_PREFIX + id, "");
+        if (raw == null || raw.isEmpty()) raw = prefs.getString(V3_KEYS_PREFIX + id, "");
+        if (raw != null && !raw.isEmpty()) {
+            try { return new JSONArray(raw).length(); } catch (JSONException ignored) { }
+        }
+        return loadAll(context, id).size();
+    }
 
     public static synchronized int activeIndex(Context context, String profileId, int size) {
         if (size <= 0) return 0;
@@ -117,7 +142,7 @@ public final class BotnaKeyVault {
 
     public static synchronized void setActiveIndex(Context context, String profileId, int index) {
         String id = safeId(profileId);
-        int size = loadAll(context, id).size();
+        int size = count(context, id);
         if (size <= 0) return;
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putInt(ACTIVE_PREFIX + id, Math.max(0, Math.min(size - 1, index))).apply();
