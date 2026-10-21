@@ -5,6 +5,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -143,7 +144,7 @@ public final class BotnaAICompiler {
             List<String> additions = splitKeyLines(key);
             if (!additions.isEmpty()) {
                 ArrayList<String> merged = BotnaKeyVault.loadAll(context, provider);
-                for (String candidate : additions) if (!merged.contains(candidate) && merged.size() < 20) merged.add(candidate);
+                for (String candidate : additions) if (!merged.contains(candidate)) merged.add(candidate);
                 BotnaKeyVault.saveAll(context, provider, merged);
             }
         }
@@ -172,6 +173,8 @@ public final class BotnaAICompiler {
         if (model.isEmpty() || endpoint.isEmpty()) throw new IllegalStateException("أدخل رابط API واسم النموذج لهذا المزوّد أولًا.");
 
         String userText = "مكتبة الصور المتاحة، أرقامها وأسماؤها (لا تختَر رقمًا خارجها): " + libraryForPrompt(library)
+                + "\n\nبيئة الجهاز: " + deviceProfile()
+                + "\nمعلومات الجهاز تساعد في اختيار إجراء متوافق فقط، ولا تمنح التطبيق صلاحيات خاصة. لا تحاول تجاوز أذونات أندرويد أو إعدادات الحماية؛ إذا احتاجت الخطوة إذنًا، أوقفها واشرح للمستخدم كيف يمنحه يدويًا."
                 + "\n\nحلّل الأمر الفلسطيني التالي كاملًا قبل إخراج JSON. استخرج كل فعل وشرط ومدة وانتظار ونتيجة مطلوبة، وحافظ على ترتيب العطف والتتابع. لا تسقط التعليمات المتأخرة ولا تعتبر طلب النتيجة مجرد تنفيذ. إذا تعذر تنفيذ جزء لغياب عنوان أو معلومة شاشة أو صلاحية، احتفظ بالأجزاء الآمنة وأضف تحذيرًا محددًا ولا تخترع قيمة.\nالأمر الأصلي بالحرف:\n" + (instructions == null ? "" : instructions.trim());
         if (appContext != null && !appContext.trim().isEmpty()) userText += "\n\nسياق التطبيق وحالته الفعلية للاستخدام في التخطيط فقط:\n" + appContext.trim();
         if (screenContext != null) {
@@ -215,6 +218,7 @@ public final class BotnaAICompiler {
                     earliestCooldown = Math.min(earliestCooldown, until);
                 }
                 BotnaKeyVault.setActiveIndex(context, provider, (keyIndex + 1) % keys.size());
+                if (isTransientRateLimitFailure(ex.getMessage())) break;
             }
         }
         boolean allKeysCooling = !keys.isEmpty();
@@ -267,7 +271,6 @@ public final class BotnaAICompiler {
         for (String line : text.split("\\r?\\n")) {
             String value = line == null ? "" : line.trim();
             if (value.isEmpty() || value.matches("[-_—─]{3,}") || result.contains(value)) continue;
-            if (result.size() >= 20) break;
             result.add(value);
         }
         return result;
@@ -284,20 +287,25 @@ public final class BotnaAICompiler {
     public static boolean isTransientRateLimitFailure(String message) {
         String lower = String.valueOf(message == null ? "" : message).toLowerCase(Locale.ROOT);
         if (lower.isEmpty()) return false;
-        if (lower.contains("quota exceeded for metric") || lower.contains("free_tier_requests")
-                || lower.contains("current quota") || lower.contains("daily quota") || lower.contains("daily limit")
-                || lower.contains("insufficient_quota") || lower.contains("billing") || lower.contains("payment required")
-                || lower.contains("exceeded your current quota") || lower.contains("invalid api key")
-                || lower.contains("unauthorized") || lower.contains("http 401") || lower.contains("http 403")) return false;
+        if (lower.contains("daily quota") || lower.contains("daily limit")
+                || lower.contains("insufficient_quota") || lower.contains("billing")
+                || lower.contains("payment required") || lower.contains("exceeded your current quota")
+                || lower.contains("invalid api key") || lower.contains("unauthorized")
+                || lower.contains("http 401") || lower.contains("http 403")) return false;
+        if (lower.contains("free_tier_requests") && !lower.contains("per_minute")
+                && !lower.contains("per minute") && !lower.contains("requests_per_minute")) return false;
+        if (lower.contains("quota exceeded for metric") && !lower.contains("per_minute")
+                && !lower.contains("per minute") && !lower.contains("requests_per_minute")) return false;
         Matcher retry = Pattern.compile("retry\\s+in\\s+(?:(\\d+)h)?\\s*(?:(\\d+)m)?\\s*(?:(\\d+(?:\\.\\d+)?)s)?", Pattern.CASE_INSENSITIVE).matcher(lower);
         if (retry.find()) {
             long seconds = parseLong(retry.group(1)) * 3600L + parseLong(retry.group(2)) * 60L + (long) parseDouble(retry.group(3));
-            return seconds > 0 && seconds <= 90;
+            return seconds > 0 && seconds <= 300;
         }
         return lower.contains("rate limit") || lower.contains("rate_limit_exceeded") || lower.contains("too many requests")
                 || lower.contains("requests per minute") || lower.contains("per minute") || lower.contains("http 429")
-                || lower.contains("http 503") || lower.contains("http 408") || lower.contains("temporarily unavailable")
-                || lower.contains("timed out") || lower.contains("timeout");
+                || lower.contains("http 503") || lower.contains("http 408") || lower.contains("http 504")
+                || lower.contains("temporarily unavailable") || lower.contains("timed out") || lower.contains("timeout")
+                || lower.contains("server is busy") || lower.contains("high demand");
     }
 
     public static long retryDelayMillis(String message, int attempt) {
@@ -308,12 +316,10 @@ public final class BotnaAICompiler {
             long minutes = parseLong(retry.group(2));
             double seconds = parseDouble(retry.group(3));
             double exact = (hours * 3600d + minutes * 60d + seconds) * 1000d;
-            if (exact <= 0d || exact > 90_000d) return -1L;
-            return (long) exact + 500L + (System.currentTimeMillis() % 400L);
+            if (exact <= 0d || exact > 300_000d) return -1L;
+            return (long) exact;
         }
-        int exponent = Math.max(0, Math.min(5, attempt - 1));
-        long base = Math.min(30_000L, 1_200L * (1L << exponent));
-        return base + 250L + (System.currentTimeMillis() % 500L);
+        return 4_000L;
     }
 
     private static long keyCooldownDurationMillis(Exception error) {
@@ -331,7 +337,7 @@ public final class BotnaAICompiler {
             long ms = (hours * 3600L + minutes * 60L) * 1000L + (long) (seconds * 1000.0d);
             return Math.max(1000L, Math.min(24L * 60L * 60L * 1000L, ms));
         }
-        return 60_000L;
+        return 4_000L;
     }
 
     private static long parseLong(String value) { try { return value == null || value.isEmpty() ? 0L : Long.parseLong(value); } catch (Exception ignored) { return 0L; } }
@@ -547,6 +553,16 @@ public final class BotnaAICompiler {
         return out.toString();
     }
 
+    private static String deviceProfile() {
+        String manufacturer = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
+        String brand = Build.BRAND == null ? "" : Build.BRAND.trim();
+        String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+        String combined = (manufacturer + " " + brand + " " + model).toLowerCase(Locale.ROOT);
+        String deviceName = combined.contains("rmx3363") || combined.contains("gt master")
+                ? "realme GT Master Edition (RMX3363)" : (manufacturer + " " + model).trim();
+        return deviceName + "؛ Android API " + Build.VERSION.SDK_INT;
+    }
+
     private static String bitmapToJpegBase64(Bitmap source) throws Exception {
         Bitmap scaled = source;
         boolean copied = false;
@@ -736,17 +752,21 @@ public final class BotnaAICompiler {
         Runnable refreshKeyPreview = () -> {
             keyPreview.removeAllViews();
             List<String> lines = splitKeyLines(key.getText().toString());
-            for (int i = 0; i < lines.size(); i++) {
-                TextView item = new TextView(context); item.setText(BotnaI18n.isEnglish(context) ? "New key " + (i + 1) + " • will be encrypted" : "مفتاح جديد " + (i + 1) + " • سيُحفظ مشفّرًا");
-                item.setTextColor(TEXT); item.setTextSize(11); item.setPadding(pad / 2, pad / 5, pad / 2, pad / 5);
-                item.setBackground(shape(context, Color.argb(95, 35, 226, 244), CYAN)); keyPreview.addView(item, new LinearLayout.LayoutParams(-1, -2));
-                if (i + 1 < lines.size()) { View divider = new View(context); divider.setBackgroundColor(Color.argb(150, 35, 226, 244));
-                    LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(-1, Math.max(1, pad / 12)); dividerLp.topMargin = pad / 5; dividerLp.bottomMargin = pad / 5; keyPreview.addView(divider, dividerLp); }
-            }
-            int saved = BotnaKeyVault.count(context, providerSpinner.getSelectedItemPosition() >= 0 && providerSpinner.getSelectedItemPosition() < ids.length ? ids[providerSpinner.getSelectedItemPosition()] : PROVIDER_GEMINI);
+            TextView summary = new TextView(context);
+            summary.setText(BotnaI18n.isEnglish(context)
+                    ? lines.size() + " new distinct key(s) will be encrypted when saved."
+                    : "سيتم تشفير " + lines.size() + " مفتاح/مفاتيح جديدة غير مكررة عند الحفظ.");
+            summary.setTextColor(TEXT);
+            summary.setTextSize(11);
+            summary.setPadding(pad / 2, pad / 5, pad / 2, pad / 5);
+            summary.setBackground(shape(context, Color.argb(95, 35, 226, 244), CYAN));
+            keyPreview.addView(summary, new LinearLayout.LayoutParams(-1, -2));
+            String selectedId = providerSpinner.getSelectedItemPosition() >= 0 && providerSpinner.getSelectedItemPosition() < ids.length
+                    ? ids[providerSpinner.getSelectedItemPosition()] : PROVIDER_GEMINI;
+            int saved = BotnaKeyVault.count(context, selectedId);
             keyCount.setText(BotnaI18n.isEnglish(context)
-                    ? "Saved keys for this provider: " + saved + " • New keys in field: " + lines.size() + " • maximum 20"
-                    : "المفاتيح المحفوظة لهذا المزوّد: " + saved + " • مفاتيح جديدة في الحقل: " + lines.size() + " • الحد الأقصى 20");
+                    ? "Saved keys for this provider: " + saved + " • New distinct keys in field: " + lines.size() + " • No fixed application limit"
+                    : "المفاتيح المحفوظة لهذا المزوّد: " + saved + " • المفاتيح الجديدة غير المكررة: " + lines.size() + " • لا يوجد حد ثابت داخل التطبيق");
         };
         key.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -1024,11 +1044,27 @@ public final class BotnaAICompiler {
                 if (data[1].trim().isEmpty() || data[0].trim().isEmpty()) {
                     Toast.makeText(context, "أدخل رابط API واسم النموذج قبل الحفظ.", Toast.LENGTH_LONG).show(); return;
                 }
-                try {
-                    saveProfileSettings(context, selected, data[2], data[1], data[0], false);
-                    Toast.makeText(context, "حُفظ إعداد " + providerLabel(selected) + " ومفتاحه إن أُدخل.", Toast.LENGTH_LONG).show();
-                    dialog.dismiss(); if (onSaved != null) onSaved.run();
-                } catch (Exception e) { Toast.makeText(context, "تعذر حفظ الإعدادات: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
+                final String selectedProvider = selected;
+                final String[] selectedData = data.clone();
+                saveSettingsButton.setEnabled(false);
+                status.setText(BotnaI18n.translate(context, "جارٍ حفظ الإعدادات والمفاتيح المشفّرة…"));
+                new Thread(() -> {
+                    String saveError = null;
+                    try { saveProfileSettings(context, selectedProvider, selectedData[2], selectedData[1], selectedData[0], false); }
+                    catch (Exception e) { saveError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+                    final String error = saveError;
+                    new Handler(Looper.getMainLooper()).post(() -> {
+                        saveSettingsButton.setEnabled(true);
+                        if (error != null) {
+                            status.setText("تعذر حفظ الإعدادات: " + error);
+                            Toast.makeText(context, "تعذر حفظ الإعدادات: " + error, Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        Toast.makeText(context, "حُفظ إعداد " + providerLabel(selectedProvider) + " ومفاتيحه إن أُدخلت.", Toast.LENGTH_LONG).show();
+                        dialog.dismiss();
+                        if (onSaved != null) onSaved.run();
+                    });
+                }, "Botna-Key-Save").start();
             });
             clearKeysButton.setOnClickListener(v -> {
                 try {
