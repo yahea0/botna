@@ -109,7 +109,7 @@ public final class BotnaI18n {
         put(e, "رابط مخصص متوافق مع Chat Completions", "Custom Chat Completions endpoint"); put(e, "مزود متوافق قديم/مخصص", "Legacy/custom compatible provider");
         put(e, "GitHub Copilot عبر جسر خارجي (ليس مفتاح API عاديًا)", "GitHub Copilot via external bridge (not a normal API key)");
         put(e, "مفتاح جديد ", "New key "); put(e, " • سيُحفظ مشفّرًا", " • will be encrypted"); put(e, "المفاتيح المحفوظة لهذا المزوّد: ", "Saved keys for this provider: ");
-        put(e, " • مفاتيح جديدة في الحقل: ", " • New keys in field: "); put(e, " • الحد الأقصى 20", " • maximum 20");
+        put(e, " • مفاتيح جديدة في الحقل: ", " • New keys in field: ");
         put(e, "✓ يوجد ", "✓ "); put(e, " مفتاح/مفاتيح محفوظة ومشفّرة؛ سيجرّب التطبيق المفاتيح المتاحة، لكن مفاتيح Gemini من المشروع نفسه تشترك في الحصة.", " encrypted key(s) saved. Available keys will be tried; Gemini keys from one project share its quota.");
         put(e, "لا يوجد مفتاح محفوظ لهذا المزوّد حتى الآن.", "No key is saved for this provider yet.");
         put(e, "تفعيل / إدارة خدمة إمكانية الوصول", "Enable / manage Accessibility service");
