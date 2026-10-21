@@ -83,9 +83,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
     public static boolean isLocalSpeedTestRequest(String source) {
         if (source == null) return false;
-        String value = source.toLowerCase(Locale.ROOT)
-                .replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
-                .replace('ى', 'ي').replace('ة', 'ه');
+        String value = BotnaArabicDialect.normalize(source).replace('ة', 'ه');
         return value.contains("سرع") && (value.contains("نت") || value.contains("انترنت")
                 || value.contains("internet") || value.contains("wifi") || value.contains("واي فاي"));
     }
@@ -1511,9 +1509,21 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private interface ChoiceCallback { void done(int value); }
 
     private void promptNumber(String title, int initial, int min, int max, IntCallback callback) {
-        EditText input = new EditText(this); input.setSingleLine(true); input.setInputType(2); input.setText(String.valueOf(initial));
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setText(String.valueOf(initial));
+        input.setTextColor(TEXT);
+        input.setHintTextColor(MUTED);
+        input.setTextSize(17);
+        input.setSelectAllOnFocus(true);
+        input.setHighlightColor(CYAN);
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        input.setBackground(glassShape(BG, CYAN, 1, 12));
         showCustomDialog(title, input, () -> {
-            int value = initial; try { value = Integer.parseInt(input.getText().toString().trim()); } catch (Exception ignored) { }
+            String number = BotnaArabicDialect.normalize(input.getText().toString()).replaceAll("[^0-9]", "");
+            int value = initial;
+            try { if (!number.isEmpty()) value = Integer.parseInt(number); } catch (Exception ignored) { }
             callback.done(Math.max(min, Math.min(max, value)));
         });
     }
@@ -1672,22 +1682,30 @@ public class BotnaAccessibilityService extends AccessibilityService {
         String stagedDraft = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE)
                 .getString(customDraftPreferenceKey(scriptId, stepId), null);
         input.setText(stagedDraft == null ? step.optString("instructions", "") : stagedDraft);
-        input.setSingleLine(false); input.setMinLines(4); input.setMaxLines(8);
+        input.setSingleLine(false);
+        input.setMinLines(5);
+        input.setMaxLines(Integer.MAX_VALUE);
         input.setGravity(Gravity.TOP | Gravity.START);
+        input.setVerticalScrollBarEnabled(true);
+        input.setScrollBarStyle(View.SCROLLBARS_INSIDE_INSET);
+        input.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         input.setTextSize(15); input.setPadding(dp(12), dp(10), dp(12), dp(10));
         input.setTextColor(TEXT); input.setHintTextColor(MUTED);
         input.setHint(BotnaI18n.translate(this, "مثال: تابع صورة رقم 4 بالمكتبة، إذا وجدتها انتظر ثانيتين ثم ارجع"));
         input.setBackground(glassShape(Color.rgb(8, 14, 22), CYAN, 1, 12));
-        content.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        content.addView(input, new LinearLayout.LayoutParams(-1, dp(220)));
         CheckBox includeScreenContext = new CheckBox(this);
         includeScreenContext.setText(BotnaI18n.translate(this, "إرفاق لقطة الشاشة الحالية للمترجم البصري"));
         includeScreenContext.setTextColor(MUTED);
         includeScreenContext.setTextSize(12);
         includeScreenContext.setButtonTintList(android.content.res.ColorStateList.valueOf(CYAN));
         includeScreenContext.setChecked(true);
+        includeScreenContext.setEnabled(BotnaAICompiler.isConfigured(this));
         LinearLayout.LayoutParams visionLp = wrap(); visionLp.topMargin = dp(3);
         content.addView(includeScreenContext, visionLp);
-        TextView visionPrivacy = label("عند التفعيل، تُرسل لقطة الشاشة إلى مزوّد الذكاء الاصطناعي عبر الإنترنت. أوقفه في الشاشات الحساسة.", 10, MUTED, false);
+        TextView visionPrivacy = label(BotnaAICompiler.isConfigured(this)
+                ? "عند التفعيل، تُرسل لقطة الشاشة إلى مزوّد الذكاء الاصطناعي عبر الإنترنت. أوقفه في الشاشات الحساسة."
+                : "لقطة الشاشة لن تُرسل لأن مزوّد الذكاء الاصطناعي غير مضبوط. المحلّل المحلي نصّي فقط.", 10, MUTED, false);
         LinearLayout.LayoutParams visionPrivacyLp = wrap(); visionPrivacyLp.topMargin = dp(1);
         content.addView(visionPrivacy, visionPrivacyLp);
 
@@ -1709,8 +1727,8 @@ public class BotnaAccessibilityService extends AccessibilityService {
         });
 
         TextView aiStatus = label(BotnaAICompiler.isConfigured(this)
-                ? "المزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this)) + " — متاح للتحليل عبر الإنترنت."
-                : "المحلّل المحلي متاح. لفهم الأوامر المركبة استخدم مزوّد API مضبوطًا من الإعدادات.", 12, MUTED, false);
+                ? "المزوّد المحدد: " + BotnaAICompiler.providerLabel(BotnaAICompiler.providerId(this)) + " — متاح للتحليل البصري ومراجعة سجل الخطوات عند إرفاق الشاشة."
+                : "المحلّل المحلي يستخدم قواعد لغوية ولا يرى الصور أو يتدرّب تلقائيًا؛ لفهم الأوامر المركبة ورؤية الشاشة اضبط مزوّد API.", 12, MUTED, false);
         LinearLayout.LayoutParams statusLp = wrap(); statusLp.topMargin = dp(8); content.addView(aiStatus, statusLp);
         LinearLayout buttons = horizontal();
         Button settings = button("⚙ إعدادات AI", false);
@@ -1746,8 +1764,25 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                         | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
                 android.util.DisplayMetrics editorMetrics = realScreenMetrics();
-                dialog.getWindow().setLayout(Math.min(editorMetrics.widthPixels - dp(24), dp(520)),
-                        Math.min((int) (editorMetrics.heightPixels * 0.78f), dp(720)));
+                int editorWidth = Math.min(editorMetrics.widthPixels - dp(24), dp(520));
+                int defaultEditorHeight = Math.min((int) (editorMetrics.heightPixels * 0.78f), dp(720));
+                dialog.getWindow().setLayout(editorWidth, defaultEditorHeight);
+                View decor = dialog.getWindow().getDecorView();
+                int[] lastEditorHeight = {defaultEditorHeight};
+                decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                    if (!dialog.isShowing() || dialog.getWindow() == null) return;
+                    android.graphics.Rect visibleFrame = new android.graphics.Rect();
+                    decor.getWindowVisibleDisplayFrame(visibleFrame);
+                    int coveredHeight = Math.max(0, editorMetrics.heightPixels - visibleFrame.bottom);
+                    boolean keyboardVisible = coveredHeight > dp(160);
+                    int targetHeight = keyboardVisible
+                            ? Math.max(dp(300), Math.min(defaultEditorHeight, editorMetrics.heightPixels - coveredHeight - dp(40)))
+                            : defaultEditorHeight;
+                    if (Math.abs(lastEditorHeight[0] - targetHeight) > dp(8)) {
+                        lastEditorHeight[0] = targetHeight;
+                        dialog.getWindow().setLayout(editorWidth, targetHeight);
+                    }
+                });
             }
             cancelEditor.setOnClickListener(v -> {
                 String draft = input.getText().toString().trim();
@@ -2318,13 +2353,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
     private void updateCompiledBlock(String parentId,int index,String key,int value){JSONObject block=findCompiledBlock(parentId,index);if(block==null)return;putInt(block,key,value);saveCompiledBlockParent(parentId);showCompiledBlockEditor(findStepById(ensureScript(),parentId));}
 
     private String normalizeArabicCommand(String raw) {
-        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
-        value = value.replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ى','ي')
-                .replace('ـ', ' ');
-        String arabicDigits="٠١٢٣٤٥٦٧٨٩";
-        for(int i=0;i<arabicDigits.length();i++) value=value.replace(arabicDigits.charAt(i),(char)('0'+i));
-        value=value.replaceAll("[\\u064B-\\u065F\\u0670]", "").replaceAll("\\s+", " ").trim();
-        return value;
+        return BotnaArabicDialect.normalize(raw);
     }
 
     private boolean compileYouTubeSongRequest(String original, JSONArray out, List<String> warnings) {
@@ -2368,9 +2397,10 @@ public class BotnaAccessibilityService extends AccessibilityService {
 
         final String conditionalThenToken = "__botna_conditional_then__";
         clean = clean.replaceAll("(?iu)((?:اذا|إذا)\\s+(?:وجدتها|وجدته|ظهرت|لقيتها|لم\\s+تجدها|لم\\s+تجده|ما\\s+لقيتها|لم\\s+تظهر).*?)\\s+ثم\\s+", "$1 " + conditionalThenToken + " ");
-        clean = clean.replaceAll("(?iu)\\s+و(?=(?:ابحث|ابحثلي|ابحث\\s+لي|دور|دوّر|فتش|اكتب|اغلق|اقفل|اسحب|مرر|انقر|اضغط|افتح|افتحلي|شغل|اعمل|سوي|جيبلي|افحص|اختبر|تحقق|روح|اقرا|اقرأ))", ";");
+        clean = clean.replaceAll("(?iu)\\s+و(?=(?:ابحث|ابحثلي|ابحث\\s+لي|دور|دورلي|دوّر|فتش|فتشلي|اكتب|اكتبلي|اغلق|اقفل|اسحب|مرر|انقر|انقرلي|اضغط|اكبس|افتح|افتحلي|شغل|شغللي|اعمل|اعمللي|سوي|سويلي|جيبلي|هاتلي|اعطيني|اعطني|عطيني|ورجيني|فرجيني|افحص|افحصلي|اختبر|تحقق|روح|اقرا|اقرأ|اعرض|خبرني|خليك|انتظر|استنى|راقب|تابع|قيس))", ";");
+        clean = clean.replaceAll("(?iu)[،,]\\s*(?=(?:اذا|إذا|لو|لما|افتح|افحص|اختبر|ابحث|دور|فتش|اكتب|امسح|اغلق|اضغط|اكبس|انقر|اسحب|مرر|انتظر|استنى|اعطيني|هات|جيب|ورجيني|فرجيني|اقرا|اقرأ|اعرض|خبرني|شغل))", ";");
 
-        String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+(?:ثم|وبعدين|بعدين|بعد ذلك|بعدها|ومن ثم)\\s+");
+        String[] clauses = clean.split("(?iu)\\n+|[؛;]+|\\s+(?:ثم|وبعدين|بعدين|بعد ذلك|وبعد ذلك|بعدها|وبعدها|ومن ثم|وعقبها|وبعديها|بعديها|عقبها)\\s+");
         Deque<String> structure = new ArrayDeque<>();
         for (String raw : clauses) {
             String clause = raw.trim(); if (clause.isEmpty()) continue;
@@ -2446,10 +2476,16 @@ public class BotnaAccessibilityService extends AccessibilityService {
                 if(!rest.isEmpty()) parseCustomAction(rest,result,warnings,BotnaStore.imageLibrary(this));
                 continue;
             }
-            if (norm.startsWith("اذا فشل") || norm.startsWith("اذا فشلت") || norm.startsWith("لو فشل") || norm.startsWith("لو فشلت") || norm.startsWith("اذا ما اشتغل") || norm.startsWith("لو ما اشتغل") || norm.startsWith("اذا لم تجد") || norm.startsWith("اذا لم تظهر") || norm.startsWith("اذا ما نجح") || norm.startsWith("اذا ما زبط") || norm.startsWith("اذا ما ضبط")) {
+            if (norm.startsWith("اذا فشل") || norm.startsWith("اذا فشلت") || norm.startsWith("لو فشل") || norm.startsWith("لو فشلت") || norm.startsWith("اذا ما اشتغل") || norm.startsWith("لو ما اشتغل") || norm.startsWith("اذا لم تجد") || norm.startsWith("اذا لم تظهر") || norm.startsWith("اذا ما نجح") || norm.startsWith("اذا ما زبط") || norm.startsWith("اذا ما ضبط") || norm.startsWith("اذا ما في انترنت") || norm.startsWith("اذا فش انترنت")) {
                 addCompiled(result,TYPE_IF_FAIL,"إذا فشل الإجراء السابق"); structure.push("IF");
-                String rest=norm.replaceFirst("(?iu)^(?:(?:اذا|لو)\\s+(?:فشل(?:ت)?|ما\\s+(?:اشتغل|نجح|زبط|ضبط)|لم\\s+(?:تجد|تظهر)))(?:\\s+الاجراء السابق)?\\s*[:：]?\\s*","").trim();
-                if(!rest.isEmpty()) parseCustomAction(rest,result,warnings,BotnaStore.imageLibrary(this));
+                String rest=norm.replaceFirst("(?iu)^(?:(?:اذا|لو)\\s+(?:فشل(?:ت)?|ما\\s+(?:اشتغل|نجح|زبط|ضبط)|ما\\s+في\\s+(?:ال)?انترنت|فش\\s+(?:ال)?انترنت|لم\\s+(?:تجد|تظهر)))(?:\\s+الاجراء السابق)?\\s*[:：]?\\s*", "").trim();
+                if (!rest.isEmpty()) {
+                    if ((rest.contains("صفحة الراوتر") || rest.contains("صفحه الراوتر") || rest.contains("الراوتر")) && !rest.contains("http://") && !rest.contains("https://")) {
+                        warnings.add("لم يذكر الأمر رابط صفحة الراوتر. لم أفترض عنوانًا أو زر إعادة تشغيل؛ أضف رابط الصفحة أو فعّل الوكيل البصري مع لقطة مؤكدة.");
+                    } else {
+                        parseCustomAction(rest,result,warnings,BotnaStore.imageLibrary(this));
+                    }
+                }
                 continue;
             }
             if (norm.equals("اذا نجح") || norm.equals("اذا فشل")) {
@@ -2511,7 +2547,9 @@ public class BotnaAccessibilityService extends AccessibilityService {
         }
         if (norm.contains("فحص الانترنت") || norm.contains("افحص الانترنت") || norm.contains("افحصلي الانترنت")
                 || norm.contains("افحصلي النت") || norm.contains("افحص النت") || norm.contains("اختبر الاتصال") || norm.contains("اختبر الانترنت")) {
-            JSONObject st = compiledStep(TYPE_CHECK_INTERNET, "فحص اتصال الإنترنت"); putInt(st,"attempts",3); putInt(st,"intervalMs",5000); putInt(st,"timeoutMs",4000); result.put(st); return;
+            JSONObject st = compiledStep(TYPE_CHECK_INTERNET, "فحص اتصال الإنترنت"); putInt(st,"attempts",3); putInt(st,"intervalMs",5000); putInt(st,"timeoutMs",4000); result.put(st);
+            if (norm.contains("باستمرار") || norm.contains("طول ما") || norm.contains("طالما") || norm.contains("كل ما")) warnings.add("المحلّل المحلي أنشأ فحص اتصال محدودًا، وليس مراقبة مستمرة. لم يفترض عنوان الراوتر أو ينفذ إعادة تشغيل دون عنوان واضح وخطوات شاشة مؤكدة.");
+            return;
         }
         if ((norm.contains("انتظر") || norm.contains("استنى") || norm.contains("ضل افحص") || norm.contains("ظل افحص")) && (norm.contains("يعود الانترنت") || norm.contains("يرجع الانترنت") || norm.contains("يتصل بالانترنت") || norm.contains("الانترنت يرجع") || norm.contains("الاتصال يرجع"))) {
             JSONObject st = compiledStep(TYPE_WAIT_INTERNET, "انتظار عودة الإنترنت"); putInt(st,"attempts",120); putInt(st,"intervalMs",5000); putInt(st,"timeoutMs",4000); result.put(st); return;
@@ -2656,7 +2694,7 @@ public class BotnaAccessibilityService extends AccessibilityService {
         if (waitAt < 0) { waitAt = source.indexOf("استنّى"); waitToken = "استنّى"; }
         if (waitAt < 0) { waitAt = source.indexOf("انتظار"); waitToken = "انتظار"; }
         if (waitAt >= 0) source = source.substring(waitAt + waitToken.length());
-        java.util.regex.Matcher m=java.util.regex.Pattern.compile("(\\d+)\\s*(مللي\\s*ثانية|ms|ثانية|ثواني|دقيقة|دقائق)?").matcher(source);
+        java.util.regex.Matcher m=java.util.regex.Pattern.compile("(\\d+)\\s*(مللي\\s*ثانية|ms|ثانية|ثواني|ثوان|دقيقة|دقائق)?").matcher(source);
         if(m.find()) {
             int n=Math.max(0,Math.min(60000,parseIntSafe(m.group(1),1)));
             String unit=m.group(2)==null?"":m.group(2);
