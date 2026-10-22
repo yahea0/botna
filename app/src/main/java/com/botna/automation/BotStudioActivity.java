@@ -360,8 +360,21 @@ public final class BotStudioActivity extends Activity {
 
     private void exportChat() {
         JSONArray messages = store.messages(selectedBotId, 300);
-        Intent send = new Intent(Intent.ACTION_SEND); send.setType("application/json"); send.putExtra(Intent.EXTRA_TEXT, messages.toString(2));
-        try { startActivity(Intent.createChooser(send, "تصدير محادثة البوت")); } catch (Exception e) { Toast.makeText(this, "تعذر فتح خيارات التصدير.", Toast.LENGTH_SHORT).show(); }
+        String payload;
+        try {
+            payload = messages.toString(2);
+        } catch (org.json.JSONException e) {
+            Toast.makeText(this, "تعذر تجهيز ملف المحادثة للتصدير.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType("application/json");
+        send.putExtra(Intent.EXTRA_TEXT, payload);
+        try {
+            startActivity(Intent.createChooser(send, "تصدير محادثة البوت"));
+        } catch (Exception e) {
+            Toast.makeText(this, "تعذر فتح خيارات التصدير.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private EditText field(String hint, String value) {
