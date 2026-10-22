@@ -520,7 +520,7 @@ public class MainActivity extends Activity {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(6), dp(4), dp(6), dp(4));
-        TextView help = text("اكتب الهدف النهائي أو السؤال كما تريده، وليس شرطًا أن يكون أمرًا مباشرًا: مثل «اختبر سرعة الإنترنت وأخبرني بالنتيجة» أو «افتح الرابط ولخّص محتواه». سيحلل الوكيل لقطة الشاشة بعد كل إجراء، ثم يحفظ الخلاصة والنصوص التي ظهرت في رسائل الوكيل والسجلات. يحتاج إلى خدمة إمكانية الوصول ومزوّد API يدعم الصور. الحد الوقائي 40 إجراءً لكل مهمة.", 13, MUTED, false);
+        TextView help = text("اكتب الهدف النهائي أو السؤال كما تريده، وليس شرطًا أن يكون أمرًا مباشرًا: مثل «اختبر سرعة الإنترنت وأخبرني بالنتيجة» أو «افتح الرابط ولخّص محتواه». سيحلل الوكيل لقطة الشاشة بعد كل إجراء، ثم يحفظ الخلاصة والنصوص التي ظهرت في رسائل الوكيل والسجلات. يستمر حتى اكتمال المهمة أو إيقافها يدويًا، ويحتاج إلى خدمة إمكانية الوصول ومزوّد API يدعم الصور.", 13, MUTED, false);
         content.addView(help, matchWrap());
         EditText task = new EditText(this);
         task.setSingleLine(false); task.setMinLines(5); task.setMaxLines(10);
@@ -833,16 +833,37 @@ public class MainActivity extends Activity {
                 TextView messageBody = text(detail, 13, TEXT, false);
                 messageBody.setPadding(dp(10), dp(8), dp(10), dp(8));
                 messageScroll.addView(messageBody);
+                String detailLower = detail.toLowerCase(java.util.Locale.ROOT);
+                boolean quotaRecord = detailLower.contains("الحصة") || detailLower.contains("quota")
+                        || detailLower.contains("موعد إعادة المحاولة") || detailLower.contains("retry-after")
+                        || detailLower.contains("مفتاح متاح لهذا المزوّد");
+                TextView cooldownText = text("", 13, CYAN, false);
+                cooldownText.setPadding(dp(10), dp(8), dp(10), dp(8));
+                long[] cooldownSnapshot = quotaRecord ? BotnaAICompiler.cooldownSnapshot(MainActivity.this) : null;
                 LinearLayout messageRoot = new LinearLayout(this);
                 messageRoot.setOrientation(LinearLayout.VERTICAL);
                 messageRoot.setPadding(dp(6), dp(3), dp(6), dp(6));
                 final AlertDialog[] messageOwner = new AlertDialog[1];
                 messageRoot.addView(dialogHeader(msg.optString("title", "تفاصيل رسالة الوكيل"),
                         () -> { if (messageOwner[0] != null) messageOwner[0].dismiss(); }), matchWrap());
+                if (quotaRecord) messageRoot.addView(cooldownText, matchWrap());
                 messageRoot.addView(messageScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
                 AlertDialog messageDialog = new AlertDialog.Builder(this).setView(messageRoot).create();
                 messageOwner[0] = messageDialog;
+                Handler cooldownHandler = new Handler(Looper.getMainLooper());
+                Runnable[] cooldownTicker = new Runnable[1];
+                if (quotaRecord) {
+                    cooldownTicker[0] = new Runnable() {
+                        @Override public void run() {
+                            if (!messageDialog.isShowing()) return;
+                            cooldownText.setText(BotnaAICompiler.formatCooldownStatus(cooldownSnapshot, System.currentTimeMillis()));
+                            cooldownHandler.postDelayed(this, 1000L);
+                        }
+                    };
+                    messageDialog.setOnDismissListener(d -> cooldownHandler.removeCallbacks(cooldownTicker[0]));
+                }
                 messageDialog.show();
+                if (quotaRecord && cooldownTicker[0] != null) cooldownTicker[0].run();
                 sizeDialogToViewport(messageDialog, 0.75f);
             });
             shown++;
@@ -922,6 +943,14 @@ public class MainActivity extends Activity {
                 + "\nاسم الخطوة: " + entry.optString("stepLabel", "-")
                 + "\nالنتيجة: " + entry.optString("message", "-")
                 + "\n\nالسبب والتفاصيل:\n" + entry.optString("detail", "لا توجد تفاصيل إضافية.");
+        String detailsLower = details.toLowerCase(java.util.Locale.ROOT);
+        boolean quotaRecord = detailsLower.contains("الحصة") || detailsLower.contains("quota")
+                || detailsLower.contains("موعد إعادة المحاولة") || detailsLower.contains("retry-after")
+                || detailsLower.contains("مفتاح متاح لهذا المزوّد");
+        TextView cooldownText = text("", 13, CYAN, false);
+        cooldownText.setPadding(dp(10), dp(8), dp(10), dp(8));
+        long[] cooldownSnapshot = quotaRecord ? BotnaAICompiler.cooldownSnapshot(MainActivity.this) : null;
+        if (quotaRecord) content.addView(cooldownText, matchWrap());
         TextView text = text(details, 13, TEXT, false); content.addView(text, matchWrap());
         Bitmap screenshot = BotnaLogStore.loadScreenshot(this, entry);
         if (screenshot != null) {
@@ -940,8 +969,24 @@ public class MainActivity extends Activity {
         AlertDialog detailDialog = new AlertDialog.Builder(this).setView(detailRoot)
                 .setNegativeButton(BotnaI18n.translate(this, "حذف هذا السجل"), null).create();
         detailOwner[0] = detailDialog;
-        detailDialog.setOnDismissListener(d -> { if (screenshot != null && !screenshot.isRecycled()) screenshot.recycle(); });
-        detailDialog.show(); sizeDialogToViewport(detailDialog, 0.82f);
+        Handler cooldownHandler = new Handler(Looper.getMainLooper());
+        Runnable[] cooldownTicker = new Runnable[1];
+        if (quotaRecord) {
+            cooldownTicker[0] = new Runnable() {
+                @Override public void run() {
+                    if (!detailDialog.isShowing()) return;
+                    cooldownText.setText(BotnaAICompiler.formatCooldownStatus(cooldownSnapshot, System.currentTimeMillis()));
+                    cooldownHandler.postDelayed(this, 1000L);
+                }
+            };
+        }
+        detailDialog.setOnDismissListener(d -> {
+            if (quotaRecord && cooldownTicker[0] != null) cooldownHandler.removeCallbacks(cooldownTicker[0]);
+            if (screenshot != null && !screenshot.isRecycled()) screenshot.recycle();
+        });
+        detailDialog.show();
+        if (quotaRecord && cooldownTicker[0] != null) cooldownTicker[0].run();
+        sizeDialogToViewport(detailDialog, 0.82f);
         detailDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle(BotnaI18n.translate(this, "حذف هذا السجل؟")).setMessage(BotnaI18n.translate(this, "سيتم حذف تفاصيله ولقطة الشاشة المرتبطة به."))
                 .setPositiveButton(BotnaI18n.translate(this, "حذف"), (d, w) -> { BotnaLogStore.delete(this, entry.optString("id", "")); detailDialog.dismiss(); refreshStatus(); showLogsDialog(); })
