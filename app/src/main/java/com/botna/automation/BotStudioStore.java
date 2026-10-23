@@ -261,6 +261,14 @@ public final class BotStudioStore extends SQLiteOpenHelper {
         catch (Exception ignored) { }
     }
 
+    private static String formatDateTimeArabic(long timestamp) {
+        java.util.Date date = new java.util.Date(timestamp);
+        java.util.Calendar calendar = java.util.Calendar.getInstance();
+        calendar.setTime(date);
+        String period = calendar.get(java.util.Calendar.HOUR_OF_DAY) < 12 ? "صباحًا" : "مساءً";
+        return new java.text.SimpleDateFormat("yyyy-MM-dd hh:mm:ss", Locale.getDefault()).format(date) + " " + period;
+    }
+
     public synchronized String contextForChat(String botId, String query, int maxChars) {
         if (botId == null || botId.isEmpty()) return "";
         ArrayList<JSONObject> all = new ArrayList<>();
@@ -304,8 +312,7 @@ public final class BotStudioStore extends SQLiteOpenHelper {
         for (int i = 0; i < Math.min(32, relevantEvents.size()); i++) { JSONObject o = relevantEvents.get(i); String key = o.optString("key"); if (included.add(key)) selected.add(o); }
 
         selected.sort(Comparator.comparingLong((JSONObject o) -> o.optLong("time")));
-        java.text.SimpleDateFormat dateFormat = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-        String header = "الوقت الحالي على الجهاز: " + dateFormat.format(new java.util.Date()) + ". لا تدّعِ رؤية الشاشة الحية من هذه المحادثة؛ حالة خدمة التحكم تُرفق منفصلة عند توفرها.\n"
+        String header = "الوقت الحالي على الجهاز: " + formatDateTimeArabic(System.currentTimeMillis()) + ". لا تدّعِ رؤية الشاشة الحية من هذه المحادثة؛ حالة خدمة التحكم تُرفق منفصلة عند توفرها.\n"
                 + "هذا استرجاع من سجل المحادثة المحلي وسجل مهام الوكيل. تحتوي الرسائل القديمة والمهام المحفوظة على تاريخها؛ أجب اعتمادًا على السجلات التي تطابق سؤال المستخدم وميّز بين الأحداث القديمة والحالة الحالية.\n";
         int maxContextChars = Math.max(4000, maxChars);
         ArrayList<JSONObject> acceptedNewestFirst = new ArrayList<>();
@@ -328,7 +335,7 @@ public final class BotStudioStore extends SQLiteOpenHelper {
                 if (body.length() > 7000) body = body.substring(0, 7000) + " [اقتُطعت هذه الرسالة في سياق الطلب؛ النص الكامل محفوظ محليًا].";
             }
             long stamp = o.optLong("time");
-            String line = "\n[" + dateFormat.format(new java.util.Date(stamp)) + " • " + role + "] " + body + "\n";
+            String line = "\n[" + formatDateTimeArabic(stamp) + " • " + role + "] " + body + "\n";
             if (usedChars + line.length() <= maxContextChars) {
                 acceptedNewestFirst.add(o);
                 usedChars += line.length();
@@ -359,7 +366,7 @@ public final class BotStudioStore extends SQLiteOpenHelper {
                 if (delta >= 60_000L) out.append("[الفاصل منذ السجل المعروض السابق: ").append(delta / 60_000L).append(" دقيقة]\n");
                 else if (delta >= 1_000L) out.append("[الفاصل منذ السجل المعروض السابق: ").append(delta / 1_000L).append(" ثانية]\n");
             }
-            out.append("\n[").append(dateFormat.format(new java.util.Date(stamp))).append(" • ").append(role).append("] ").append(body).append("\n");
+            out.append("\n[").append(formatDateTimeArabic(stamp)).append(" • ").append(role).append("] ").append(body).append("\n");
             previousTime = stamp;
         }
         return out.toString();
@@ -581,34 +588,44 @@ public final class BotStudioStore extends SQLiteOpenHelper {
     public static String readAttachmentText(String path) {
         if (path == null || path.isEmpty()) return "";
         File file = new File(path);
-        if (!file.isFile() || file.length() > 2L * 1024L * 1024L) return "";
+        if (!file.isFile() || file.length() > 12L * 1024L * 1024L) return "";
         String lower = file.getName().toLowerCase(Locale.ROOT);
         try {
-            if (lower.endsWith(".docx") || lower.endsWith(".pptx") || lower.endsWith(".xlsx") || lower.endsWith(".odt") || lower.endsWith(".epub")) {
+            boolean officeContainer = lower.endsWith(".docx") || lower.endsWith(".pptx") || lower.endsWith(".xlsx")
+                    || lower.endsWith(".odt") || lower.endsWith(".epub");
+            boolean genericArchive = lower.endsWith(".zip") || lower.endsWith(".jar") || lower.endsWith(".apk") || lower.endsWith(".aab");
+            if (officeContainer || genericArchive) {
                 StringBuilder all = new StringBuilder();
                 try (ZipInputStream zip = new ZipInputStream(new FileInputStream(file))) {
-                    ZipEntry entry; byte[] buffer = new byte[8192];
-                    while ((entry = zip.getNextEntry()) != null && all.length() < 120000) {
-                        String name = entry.getName().toLowerCase(Locale.ROOT);
+                    ZipEntry entry; byte[] buffer = new byte[8192]; int visited = 0;
+                    while ((entry = zip.getNextEntry()) != null && all.length() < 120000 && visited++ < 200) {
+                        String entryName = entry.getName();
+                        String name = entryName.toLowerCase(Locale.ROOT);
                         boolean useful = (lower.endsWith(".docx") && name.equals("word/document.xml"))
                                 || (lower.endsWith(".pptx") && name.startsWith("ppt/slides/slide") && name.endsWith(".xml"))
                                 || (lower.endsWith(".xlsx") && (name.equals("xl/sharedstrings.xml") || name.matches("xl/worksheets/sheet[0-9]+\\.xml")))
-                                || ((lower.endsWith(".odt") || lower.endsWith(".epub")) && (name.endsWith(".xml") || name.endsWith(".html") || name.endsWith(".xhtml")));
-                        if (useful) {
-                            ByteArrayOutputStream out = new ByteArrayOutputStream(); int n;
-                            while ((n = zip.read(buffer)) != -1 && out.size() < 800000) out.write(buffer, 0, n);
-                            all.append(xmlToText(out.toString(StandardCharsets.UTF_8.name()))).append("\n");
+                                || ((lower.endsWith(".odt") || lower.endsWith(".epub")) && (name.endsWith(".xml") || name.endsWith(".html") || name.endsWith(".xhtml")))
+                                || (genericArchive && isReadableTextFile(name, ""));
+                        if (useful && !entry.isDirectory()) {
+                            ByteArrayOutputStream out = new ByteArrayOutputStream(); int n; int entryBytes = 0;
+                            while ((n = zip.read(buffer)) != -1 && entryBytes < 800000 && all.length() < 120000) {
+                                int keep = Math.min(n, 800000 - entryBytes);
+                                if (keep <= 0) break;
+                                out.write(buffer, 0, keep);
+                                entryBytes += keep;
+                            }
+                            String extracted = out.toString(StandardCharsets.UTF_8.name());
+                            if (genericArchive && extracted.indexOf(0) >= 0) continue;
+                            if (genericArchive && (name.endsWith(".xml") || name.endsWith(".html") || name.endsWith(".htm"))) extracted = xmlToText(extracted);
+                            all.append("\n--- ").append(entryName).append(" ---\n").append(extracted).append("\n");
                         }
                     }
                 }
                 return clip(all.toString().trim(), 120000);
             }
             String mime = attachmentMime(path);
-            if (mime.startsWith("text/") || lower.endsWith(".json") || lower.endsWith(".xml") || lower.endsWith(".csv")
-                    || lower.endsWith(".md") || lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".js")
-                    || lower.endsWith(".java") || lower.endsWith(".py") || lower.endsWith(".kt") || lower.endsWith(".yaml") || lower.endsWith(".yml")
-                    || lower.endsWith(".log") || lower.endsWith(".ini") || lower.endsWith(".rtf")) {
-                byte[] data = new byte[(int) Math.min(file.length(), 2L * 1024L * 1024L)];
+            if (isReadableTextFile(lower, mime)) {
+                byte[] data = new byte[(int) Math.min(file.length(), 4L * 1024L * 1024L)];
                 try (InputStream input = new FileInputStream(file)) { int offset = 0; while (offset < data.length) { int n = input.read(data, offset, data.length - offset); if (n < 0) break; offset += n; } }
                 String content = new String(data, StandardCharsets.UTF_8);
                 if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".rtf")) content = xmlToText(content);
@@ -616,6 +633,26 @@ public final class BotStudioStore extends SQLiteOpenHelper {
             }
         } catch (Exception ignored) { }
         return "";
+    }
+
+    private static boolean isReadableTextFile(String lower, String mime) {
+        if (mime != null && mime.startsWith("text/")) return true;
+        String[] extensions = {
+                ".txt", ".text", ".json", ".jsonl", ".ndjson", ".xml", ".csv", ".tsv", ".md", ".markdown",
+                ".mdx", ".html", ".htm", ".xhtml", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".css",
+                ".scss", ".java", ".kt", ".kts", ".py", ".pyw", ".yaml", ".yml", ".toml", ".ini", ".conf",
+                ".properties", ".env", ".log", ".rtf", ".sql", ".sh", ".bash", ".zsh", ".bat", ".cmd", ".ps1",
+                ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".go", ".rs", ".swift", ".dart", ".gradle",
+                ".gradle.kts", ".dockerfile", ".makefile", ".mk", ".patch", ".diff", ".graphql", ".proto",
+                ".vue", ".svelte", ".php", ".rb", ".pl", ".r", ".jl", ".lua", ".ex", ".exs", ".erl", ".hrl",
+                ".xml", ".svg", ".xsd", ".xsl", ".scss", ".less", ".lock", ".gitignore", ".gitattributes",
+                ".editorconfig", ".config", ".tf", ".hcl"
+        };
+        for (String ext : extensions) if (lower.endsWith(ext)) return true;
+        String name = lower.substring(lower.lastIndexOf('/') + 1);
+        return name.equals("dockerfile") || name.equals("makefile") || name.equals("gemfile")
+                || name.equals("rakefile") || name.equals("license") || name.equals("notice")
+                || name.equals("readme") || name.equals("agents.md") || name.equals("skill.md");
     }
 
     private static String xmlToText(String value) {
