@@ -41,6 +41,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Date;
@@ -59,6 +64,7 @@ public final class BotStudioActivity extends Activity {
     private static final int MUTED = Color.rgb(150, 174, 195);
     private static final int CYAN = Color.rgb(35, 226, 244);
     private final ExecutorService chatExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService skillImportExecutor = Executors.newSingleThreadExecutor();
     private BotStudioStore store;
     private LinearLayout page;
     private LinearLayout content;
@@ -86,6 +92,7 @@ public final class BotStudioActivity extends Activity {
 
     @Override protected void onDestroy() {
         chatExecutor.shutdownNow();
+        skillImportExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -168,7 +175,7 @@ public final class BotStudioActivity extends Activity {
     private void addTab(LinearLayout row, String label, String key) {
         Button b = button(label); b.setTextSize(12);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1f); lp.leftMargin = dp(2); lp.rightMargin = dp(2); row.addView(b, lp);
-        if (section.equals(key) || ("chat".equals(section) && "bots".equals(key))) b.setBackground(shape(Color.rgb(16, 78, 102), CYAN, 1.4f, 14));
+        if (section.equals(key) || ("chat".equals(section) && "bots".equals(key))) b.setBackground(glassButtonShape(true));
         b.setOnClickListener(v -> { section = key; render(); });
     }
 
@@ -214,8 +221,8 @@ public final class BotStudioActivity extends Activity {
                 .setPositiveButton("حسنًا", null).show());
         LinearLayout skillsActions = new LinearLayout(this); skillsActions.setOrientation(LinearLayout.HORIZONTAL); skillsActions.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         LinearLayout.LayoutParams skillActionsLp = top(matchWrap(), 9); panel.addView(skillsActions, skillActionsLp);
-        Button importSkill = button("⇧"); importSkill.setTextSize(23); importSkill.setContentDescription("استيراد مهارة من ملف"); importSkill.setBackground(shape(Color.rgb(8, 27, 40), Color.rgb(58, 153, 178), 1.2f, 28));
-        Button createSkill = button("＋"); createSkill.setTextSize(23); createSkill.setContentDescription("إنشاء مهارة جديدة"); createSkill.setBackground(shape(Color.rgb(8, 27, 40), Color.rgb(58, 153, 178), 1.2f, 28));
+        Button importSkill = button("⇧"); importSkill.setTextSize(23); importSkill.setContentDescription("استيراد مهارة من ملف"); importSkill.setBackground(glassButtonShape(false));
+        Button createSkill = button("＋"); createSkill.setTextSize(23); createSkill.setContentDescription("إنشاء مهارة جديدة"); createSkill.setBackground(glassButtonShape(false));
         skillsActions.addView(importSkill, new LinearLayout.LayoutParams(0, dp(48), 1)); LinearLayout.LayoutParams createLp = new LinearLayout.LayoutParams(0, dp(48), 1); createLp.leftMargin = dp(8); skillsActions.addView(createSkill, createLp);
         importSkill.setOnClickListener(v -> selectSkillFile()); createSkill.setOnClickListener(v -> showSkillEditor());
         LinearLayout safety = card(); content.addView(safety, top(matchWrap(), 10));
@@ -292,9 +299,11 @@ public final class BotStudioActivity extends Activity {
         Button thinking = button("🧠 مستوى التفكير: " + thinkingLevelLabel(BotStudioStore.thinkingLevel(this)));
         panel.addView(thinking, top(matchWrap(), 6)); thinking.setOnClickListener(v -> showThinkingDialog());
         panel.addView(text(BotnaAICompiler.thinkingSupportDescription(this), 10, MUTED, false), top(matchWrap(), 3));
-        ScrollView chatScroll = new ScrollView(this); chatScroll.setFillViewport(false); chatScroll.setSmoothScrollingEnabled(true); chatScroll.setNestedScrollingEnabled(true); chatScroll.setVerticalScrollBarEnabled(true);
+        int screenDpHeight = Math.max(480, (int) (getResources().getDisplayMetrics().heightPixels / getResources().getDisplayMetrics().density));
+        int chatViewportDp = Math.max(280, Math.min(430, (int) (screenDpHeight * 0.47f)));
+        ScrollView chatScroll = new CappedScrollView(this, dp(chatViewportDp)); chatScroll.setFillViewport(false); chatScroll.setSmoothScrollingEnabled(true); chatScroll.setNestedScrollingEnabled(false); chatScroll.setVerticalScrollBarEnabled(true); chatScroll.setBackgroundColor(Color.TRANSPARENT);
         LinearLayout messages = new LinearLayout(this); messages.setOrientation(LinearLayout.VERTICAL); messages.setPadding(0, dp(3), 0, dp(5)); chatScroll.addView(messages, new ScrollView.LayoutParams(-1, -2));
-        LinearLayout.LayoutParams chatScrollLp = new LinearLayout.LayoutParams(-1, dp(420)); chatScrollLp.topMargin = dp(8); panel.addView(chatScroll, chatScrollLp);
+        LinearLayout.LayoutParams chatScrollLp = matchWrap(); chatScrollLp.topMargin = dp(8); panel.addView(chatScroll, chatScrollLp);
         chatScroll.setOnTouchListener((v, event) -> {
             if (event.getAction() == android.view.MotionEvent.ACTION_MOVE && chatScroll.getParent() != null) chatScroll.getParent().requestDisallowInterceptTouchEvent(true);
             if ((event.getAction() == android.view.MotionEvent.ACTION_UP || event.getAction() == android.view.MotionEvent.ACTION_CANCEL) && chatScroll.getParent() != null) chatScroll.getParent().requestDisallowInterceptTouchEvent(false);
@@ -313,24 +322,25 @@ public final class BotStudioActivity extends Activity {
         for (int i = 0; i < history.length(); i++) {
             JSONObject msg = history.optJSONObject(i); if (msg == null) continue;
             boolean user = "user".equals(msg.optString("role"));
-            String body = msg.optString("body", "");
+            String body = normalizeMessageBody(msg.optString("body", ""));
+            String attachment = msg.optString("image", "");
+            boolean hasAttachment = !attachment.isEmpty() && new File(attachment).isFile();
+            if (body.isEmpty() && !hasAttachment) continue;
             long timestamp = msg.optLong("time", 0L);
-            LinearLayout messageCard = new LinearLayout(this); messageCard.setOrientation(LinearLayout.VERTICAL); messageCard.setPadding(dp(10), dp(8), dp(10), dp(8));
+            LinearLayout messageCard = new LinearLayout(this); messageCard.setOrientation(LinearLayout.VERTICAL); messageCard.setGravity(Gravity.TOP); messageCard.setMinimumHeight(0); messageCard.setPadding(dp(10), dp(8), dp(10), dp(8));
             messageCard.setBackground(shape(user ? Color.rgb(14, 54, 79) : FIELD, Color.rgb(38, 80, 100), 1, 12));
             LinearLayout.LayoutParams cardLp = matchWrap(); cardLp.topMargin = dp(5); messages.addView(messageCard, cardLp);
             LinearLayout meta = new LinearLayout(this); meta.setOrientation(LinearLayout.HORIZONTAL); meta.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); meta.setGravity(Gravity.CENTER_VERTICAL);
             messageCard.addView(meta, matchWrap());
-            Button copyWhole = button("⧉"); copyWhole.setTextSize(13); copyWhole.setContentDescription("نسخ الرسالة كاملة"); copyWhole.setBackground(shape(Color.rgb(8, 25, 36), Color.rgb(53, 125, 148), 1, 12));
+            Button copyWhole = button("⧉"); copyWhole.setTextSize(13); copyWhole.setContentDescription("نسخ الرسالة كاملة"); copyWhole.setBackground(glassButtonShape(false));
             meta.addView(copyWhole, new LinearLayout.LayoutParams(dp(38), dp(32)));
             copyWhole.setOnClickListener(v -> copyToClipboard("رسالة Botna", body));
-            TextView stamp = text(formatTimestamp(timestamp, priorDisplayedTimestamp), 10, MUTED, false); stamp.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-            LinearLayout.LayoutParams stampLp = new LinearLayout.LayoutParams(0, -2, 1f); stampLp.leftMargin = dp(8); meta.addView(stamp, stampLp);
             TextView author = text(user ? "أنت" : bot.optString("name", "البوت"), 11, user ? CYAN : TEXT, true);
-            meta.addView(author, top(matchWrap(), 0));
+            LinearLayout.LayoutParams authorLp = new LinearLayout.LayoutParams(0, -2, 1f);
+            authorLp.leftMargin = dp(8);
+            meta.addView(author, authorLp);
             addFormattedMessageBody(messageCard, body, user ? TEXT : MUTED);
-            priorDisplayedTimestamp = timestamp;
-            String attachment = msg.optString("image", "");
-            if (!attachment.isEmpty() && new File(attachment).isFile()) {
+            if (hasAttachment) {
                 if ((BotStudioStore.isImageAttachment(attachment) || BotStudioStore.isPdfAttachment(attachment)) && renderedPreviews < 12) {
                     renderedPreviews++;
                     Bitmap preview = BotStudioStore.loadAttachmentPreview(this, attachment, 460);
@@ -360,9 +370,14 @@ public final class BotStudioActivity extends Activity {
                     modelTag.setGravity(Gravity.LEFT); LinearLayout.LayoutParams modelLp = top(matchWrap(), 5); messageCard.addView(modelTag, modelLp);
                 }
             }
+            TextView stamp = text(formatTimestamp(timestamp, priorDisplayedTimestamp), 10, MUTED, false);
+            stamp.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams stampLp = top(matchWrap(), 5);
+            messageCard.addView(stamp, stampLp);
+            priorDisplayedTimestamp = timestamp;
         }
         if (showOlderAfterReload) { showOlderAfterReload = false; chatScroll.post(() -> chatScroll.scrollTo(0, 0)); }
-        else chatScroll.post(() -> chatScroll.smoothScrollTo(0, messages.getHeight()));
+        else chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
         chatStatus = text(chatBusy ? "جارٍ الحصول على رد البوت..." : (attachedFilePath.isEmpty() ? "أرفق صورة أو ملفًا أو استخدم الميكروفون." : "المرفق: " + attachedFileName), 11, CYAN, false);
         panel.addView(chatStatus, top(matchWrap(), 5));
         LinearLayout composer = new LinearLayout(this); composer.setOrientation(LinearLayout.VERTICAL); composer.setPadding(dp(8), dp(6), dp(8), dp(7));
@@ -372,16 +387,16 @@ public final class BotStudioActivity extends Activity {
         composer.addView(chatInput, matchWrap());
         LinearLayout controls = new LinearLayout(this); controls.setOrientation(LinearLayout.HORIZONTAL); controls.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); controls.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams controlsLp = top(matchWrap(), 4); composer.addView(controls, controlsLp);
-        sendChatButton = button("↑"); sendChatButton.setTextSize(25); sendChatButton.setContentDescription("إرسال إلى البوت"); sendChatButton.setBackground(shape(Color.rgb(15, 70, 100), CYAN, 1.2f, 28));
-        Button voice = button("🎙"); voice.setTextSize(20); voice.setContentDescription("إملاء صوتي"); voice.setBackground(shape(Color.rgb(8, 25, 36), Color.rgb(69, 137, 163), 1, 28));
-        Button attach = button("＋"); attach.setTextSize(24); attach.setContentDescription("إرفاق ملف أو صورة"); attach.setBackground(shape(Color.rgb(8, 25, 36), Color.rgb(69, 137, 163), 1, 28));
+        sendChatButton = button("↑"); sendChatButton.setTextSize(25); sendChatButton.setContentDescription("إرسال إلى البوت"); sendChatButton.setBackground(glassButtonShape(true));
+        Button voice = button("🎙"); voice.setTextSize(20); voice.setContentDescription("إملاء صوتي"); voice.setBackground(glassButtonShape(false));
+        Button attach = button("＋"); attach.setTextSize(24); attach.setContentDescription("إرفاق ملف أو صورة"); attach.setBackground(glassButtonShape(false));
         sendChatButton.setEnabled(!chatBusy); attach.setEnabled(!chatBusy); voice.setEnabled(!chatBusy);
         controls.addView(sendChatButton, new LinearLayout.LayoutParams(dp(50), dp(48)));
         LinearLayout.LayoutParams spacerLp = new LinearLayout.LayoutParams(0, dp(1), 1f); controls.addView(new View(this), spacerLp);
         LinearLayout.LayoutParams voiceLp = new LinearLayout.LayoutParams(dp(50), dp(48)); voiceLp.leftMargin = dp(7); controls.addView(voice, voiceLp);
         LinearLayout.LayoutParams attachLp = new LinearLayout.LayoutParams(dp(50), dp(48)); attachLp.leftMargin = dp(7); controls.addView(attach, attachLp);
         attach.setOnClickListener(v -> selectFile()); voice.setOnClickListener(v -> startVoiceInput()); sendChatButton.setOnClickListener(v -> sendChat());
-        chatScroll.post(() -> chatScroll.smoothScrollTo(0, messages.getHeight()));
+        chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void sendChat() {
@@ -398,7 +413,64 @@ public final class BotStudioActivity extends Activity {
         attachedFilePath = ""; attachedFileName = ""; attachedFileMime = "";
         store.addMessage(requestBotId, "user", message, filePath, "");
         if (chatInput != null) chatInput.setText("");
+        if (isActiveTaskCorrection(message)) {
+            boolean activeFlag = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE)
+                    .getBoolean(BotnaAccessibilityService.PREF_AGENT_TASK_ACTIVE, false);
+            if (activeFlag && BotnaAccessibilityService.isServiceActuallyConnected(this)) {
+                sendBroadcast(new Intent(BotnaAccessibilityService.ACTION_CORRECT_SMART_TASK).setPackage(getPackageName()).putExtra("correction", message));
+                store.addMessage(requestBotId, "assistant", "وصل التصحيح إلى خدمة الوكيل المتصلة. سيوقف الوكيل بقية الخطوات المركبة القديمة عند أقرب نقطة آمنة، ثم يلتقط الشاشة مجددًا ويعيد التخطيط. لم أعتبر ذلك نجاحًا للتنفيذ بعد.", "", BotnaAICompiler.model(this));
+                chatBusy = false;
+                render();
+                return;
+            }
+            if (activeFlag) {
+                chatBusy = true;
+                render();
+                chatExecutor.execute(() -> {
+                    JSONObject checkpoint = findLatestOpenCheckpointForBot(requestBotId);
+                    runOnUiThread(() -> {
+                        chatBusy = false;
+                        if (checkpoint != null) {
+                            resumeCheckpointWithCorrection(requestBotId, message, checkpoint);
+                        } else {
+                            store.addMessage(requestBotId, "assistant", "تعذر تسليم التصحيح لأن خدمة الوكيل غير متصلة ولم أجد نقطة استئناف لهذا البوت. لا أرى الشاشة حاليًا ولم ينفذ الهاتف شيئًا.", "", BotnaAICompiler.model(this));
+                            if (requestBotId.equals(selectedBotId)) render();
+                        }
+                    });
+                });
+                return;
+            }
+        }
+        if (isTaskCorrectionRequest(message) && hasOpenCheckpointForBot(requestBotId)) {
+            chatBusy = true;
+            render();
+            chatExecutor.execute(() -> {
+                JSONObject checkpoint = findLatestOpenCheckpointForBot(requestBotId);
+                runOnUiThread(() -> {
+                    chatBusy = false;
+                    if (checkpoint == null) {
+                        store.addMessage(requestBotId, "assistant", "لم أجد مهمة غير مكتملة مرتبطة بهذا البوت لتطبيق التصحيح عليها. لم يبدأ أي تنفيذ.", "", BotnaAICompiler.model(this));
+                        if (requestBotId.equals(selectedBotId)) render();
+                        return;
+                    }
+                    resumeCheckpointWithCorrection(requestBotId, message, checkpoint);
+                });
+            });
+            return;
+        }
         if (isResumeAutomationRequest(message)) {
+            boolean agentActive = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE)
+                    .getBoolean(BotnaAccessibilityService.PREF_AGENT_TASK_ACTIVE, false);
+            if (agentActive && BotnaAccessibilityService.isServiceActuallyConnected(this)) {
+                String restartInstruction = "طلب المستخدم إعادة التقييم والاستكمال من حالة الشاشة الحالية. التقط لقطة شاشة جديدة الآن، أعد تقييم الهدف المصحح وسجل الأفعال، ولا تكرر الإجراء نفسه إذا فشل أو لم يغير الشاشة. إذا تعذر التصوير أو التحكم فتوقف واذكر السبب بصدق.";
+                sendBroadcast(new Intent(BotnaAccessibilityService.ACTION_CORRECT_SMART_TASK)
+                        .setPackage(getPackageName()).putExtra("correction", restartInstruction));
+                store.addMessage(requestBotId, "assistant",
+                        "وصل طلب الاستكمال إلى خدمة الوكيل المتصلة. طلبت منها إعادة التقاط الشاشة والتخطيط من الحالة الحالية بدل بدء نسخة مكررة من المهمة. سأعتبرها مستأنفة فقط بعد نجاح فحص الشاشة فعليًا.",
+                        "", BotnaAICompiler.model(this));
+                if (requestBotId.equals(selectedBotId)) render();
+                return;
+            }
             chatBusy = true;
             render();
             chatExecutor.execute(() -> {
@@ -439,6 +511,7 @@ public final class BotStudioActivity extends Activity {
                         + "\n" + BotnaAccessibilityService.agentRuntimeStatus(this)
                         + "\nالوقت الحالي على الجهاز: " + BotnaWebTools.currentTimeText()
                         + ". استخدم الوقت لحساب الفواصل. هذه المحادثة لا تحتوي على لقطة شاشة حية إلا إذا أُرفقت صورة واضحة في الطلب نفسه."
+                        + "\n\n" + BotnaWebTools.capabilitiesDescription()
                         + "\n\nالرسالة الحالية التي يجب الإجابة عنها: " + message;
                 String localToolResult = BotnaWebTools.localToolContext(message);
                 if (!localToolResult.isEmpty()) requestText += "\n\n--- نتيجة أداة محلية ---\n" + localToolResult + "\n--- نهاية نتيجة الأداة ---\nاستخدم نتيجة الأداة كما هي عند الإجابة، ولا تدّع أن الأداة نفذت كودًا عامًا.";
@@ -473,18 +546,110 @@ public final class BotStudioActivity extends Activity {
         });
     }
 
-    private boolean isResumeAutomationRequest(String raw) {
-        String value = BotnaArabicDialect.normalize(raw == null ? "" : raw);
-        String[] phrases = {"كمل المهمه", "اكمل المهمه", "استأنف المهمه", "استأنف المهمة", "تابع المهمه", "واصل المهمه", "كمل من وين وقفت", "كمل من حيث توقفت", "كمل الوكيل", "استأنف الوكيل", "تابع تنفيذ المهمه", "resume task", "continue the task", "resume the task"};
-        for (String phrase : phrases) if (value.contains(BotnaArabicDialect.normalize(phrase))) return true;
+    private boolean isActiveTaskCorrection(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return false;
+        boolean active = getSharedPreferences(BotnaStore.PREFS, MODE_PRIVATE)
+                .getBoolean(BotnaAccessibilityService.PREF_AGENT_TASK_ACTIVE, false);
+        if (!active) return false;
+        String value = BotnaArabicDialect.normalize(raw);
+        String[] markers = {"لا هيك", "مش هيك", "غلط", "خطا", "خطوات صحيحه", "الخطوات الصحيحه", "نفذ اللي طلبته", "نفذ المطلوب بالضبط", "لا تكرر", "لا تعيد", "بدل الاتجاه", "اعكس الاتجاه", "عكس التمرير", "تعكس التمرير", "التمرير بالعكس", "ارجع خطوه", "وقف هالحركه", "وقف تكرار", "نفذ بالخطوات", "التصحيح", "بدل ما", "مش راضي", "بالعكس", "correct the action", "do not repeat", "wrong direction", "try a different"};
+        for (String marker : markers) if (value.contains(BotnaArabicDialect.normalize(marker))) return true;
         return false;
+    }
+
+    private boolean isResumeAutomationRequest(String raw) {
+        String value = BotnaArabicDialect.normalize(raw == null ? "" : raw).trim();
+        String[] phrases = {"كمل المهمه", "اكمل المهمه", "استأنف المهمه", "تابع المهمه", "واصل المهمه",
+                 "كمل من وين وقفت", "كمل من حيث توقفت", "كمل الوكيل", "استأنف الوكيل", "خلينا نكمل",
+                "ابدأ من جديد", "ابدأ المهمة من جديد", "ارجع اشتغل", "جرب من جديد", "اعد المحاولة",
+                "شغل الوكيل", "resume task", "continue the task", "resume the task", "start again"};
+        for (String phrase : phrases) if (value.contains(BotnaArabicDialect.normalize(phrase))) return true;
+        String[] shortCues = {"كمل", "اكمل", "تابع", "واصل", "استأنف", "ابدا", "ابدأ", "اشتغل", "شغل", "جرب", "عيد المحاوله", "عيد المحاولة", "نفذ", "نفذها", "ارجع كمل", "كملها"};
+        for (String cue : shortCues) {
+            String normalizedCue = BotnaArabicDialect.normalize(cue);
+            if (value.equals(normalizedCue) || value.startsWith(normalizedCue + " ") || value.startsWith(normalizedCue + "،")) {
+                return hasOpenCheckpointForBot(selectedBotId);
+            }
+        }
+        return false;
+    }
+
+    private boolean isTaskCorrectionRequest(String raw) {
+        String value = BotnaArabicDialect.normalize(raw == null ? "" : raw);
+        String[] markers = {"لا هيك", "مش هيك", "غلط", "خطا", "ما اعطى النتيجه", "ما اعطت النتيجه",
+                "ما عمل المطلوب", "ما نفذ المطلوب", "ما اشتغل", "خطوات صحيحه", "نفذ اللي طلبته", "نفذ المطلوب بالضبط",
+                "لا تكرر", "لا تعيد", "بدل الاتجاه", "اعكس الاتجاه", "عكس التمرير", "تعكس التمرير", "التمرير بالعكس",
+                "الخطوات الصحيحه", "بالطريقه الصحيحه", "جرب طريقه ثانيه", "صحح المسار", "ارجع خطوه",
+                "وقف هالحركه", "وقف تكرار", "نفذ بالخطوات", "بالعكس", "wrong action", "wrong direction", "do not repeat"};
+        for (String marker : markers) if (value.contains(BotnaArabicDialect.normalize(marker))) return true;
+        return false;
+    }
+
+    private boolean hasOpenCheckpointForBot(String botId) {
+        JSONArray checkpoints = store.checkpoints(true);
+        for (int i = 0; i < checkpoints.length(); i++) {
+            JSONObject checkpoint = checkpoints.optJSONObject(i);
+            if (checkpoint == null) continue;
+            String taskId = checkpoint.optString("taskId", "");
+            String linkedBot = BotStudioStore.botForTask(this, taskId);
+            if (linkedBot.isEmpty() || linkedBot.equals(botId)) return true;
+        }
+        return false;
+    }
+
+    private JSONObject findLatestOpenCheckpointForBot(String botId) {
+        JSONArray checkpoints = store.checkpoints(true);
+        for (int i = 0; i < checkpoints.length(); i++) {
+            JSONObject checkpoint = checkpoints.optJSONObject(i);
+            if (checkpoint == null) continue;
+            String taskId = checkpoint.optString("taskId", "");
+            String linkedBot = BotStudioStore.botForTask(this, taskId);
+            if (!linkedBot.isEmpty() && !linkedBot.equals(botId)) continue;
+            return checkpoint;
+        }
+        return null;
+    }
+
+    private void resumeCheckpointWithCorrection(String botId, String correction, JSONObject checkpoint) {
+        if (checkpoint == null) {
+            store.addMessage(botId, "assistant", "لم أجد نقطة استئناف؛ لم يبدأ التنفيذ.", "", BotnaAICompiler.model(this));
+            if (botId.equals(selectedBotId)) render();
+            return;
+        }
+        String id = checkpoint.optString("taskId", "");
+        String oldGoal = checkpoint.optString("goal", "");
+        if (id.isEmpty() || oldGoal.trim().isEmpty()) {
+            store.addMessage(botId, "assistant", "نقطة الاستئناف لا تحتوي على هدف محفوظ صالح؛ لم أبدأ التنفيذ ولم أدّع رؤية الشاشة.", "", BotnaAICompiler.model(this));
+            if (botId.equals(selectedBotId)) render();
+            return;
+        }
+        String correctedGoal = oldGoal + "\n\nتصحيح صريح من المستخدم قبل الاستئناف؛ له الأولوية على الخطة القديمة: " + correction.trim()
+                + "\nيجب إعادة قراءة الشاشة الحالية، وتغيير الاستراتيجية إذا فشل الإجراء السابق، وعدم تكرار الإجراء نفسه بمعلماته نفسها إذا لم ينتج تغييرًا مرئيًا.";
+        try {
+            store.saveCheckpoint(id, correctedGoal, checkpoint.optString("scriptId", ""), checkpoint.optInt("actionCount", 0),
+                    checkpoint.optJSONArray("history"), "paused");
+            BotnaAgentStore.updateGoal(this, id, "استئناف بعد تصحيح المستخدم", correctedGoal);
+        } catch (Exception ignored) { }
+        JSONObject correctedCheckpoint;
+        try {
+            correctedCheckpoint = new JSONObject(checkpoint.toString());
+            correctedCheckpoint.put("goal", correctedGoal);
+            correctedCheckpoint.put("state", "paused");
+        } catch (Exception e) {
+            store.addMessage(botId, "assistant", "تعذر تجهيز نسخة المهمة المصححة؛ لم يبدأ التنفيذ.", "", BotnaAICompiler.model(this));
+            if (botId.equals(selectedBotId)) render();
+            return;
+        }
+        store.addMessage(botId, "assistant", "حفظت تصحيحك داخل هدف المهمة السابقة. سأحاول إعادة الاتصال بخدمة الوكيل، ثم سأتحقق من لقطة شاشة جديدة. لن أدّعي أن الاستئناف بدأ ما لم تؤكد الخدمة ذلك.", "", BotnaAICompiler.model(this));
+        if (botId.equals(selectedBotId)) render();
+        resumeCheckpoint(correctedCheckpoint);
     }
 
     private JSONObject findCheckpointForResume(String botId, String request) {
         JSONArray checkpoints = store.checkpoints(true);
         String normalizedRequest = BotnaArabicDialect.normalize(request == null ? "" : request);
         java.util.HashSet<String> genericTerms = new java.util.HashSet<>(java.util.Arrays.asList(
-                "كمل", "اكمل", "استأنف", "تابع", "واصل", "المهمه", "مهمه", "تنفيذ", "الوكيل", "بوتنا", "من", "وين", "حيث", "وقفت", "توقفت", "ارجع", "كنت", "شغال", "شغاله", "عليها", "عليه", "معها", "معه", "التي", "الذي", "كان", "كانت", "عملتها", "عملت", "لما", "قبل", "بعد", "انت", "انتا", "هاي", "هذي", "اخر", "اخير", "resume", "task", "continue", "the", "from", "where", "stopped", "please"));
+                "كمل", "اكمل", "استأنف", "تابع", "واصل", "ابدا", "اشتغل", "شغل", "جرب", "عيد", "نفذ", "نفذها", "كملها", "خلينا", "جديد", "مره", "ثانيه", "اول", "المهمه", "مهمه", "تنفيذ", "الوكيل", "بوتنا", "من", "وين", "حيث", "وقفت", "توقفت", "ارجع", "كنت", "شغال", "شغاله", "عليها", "عليه", "معها", "معه", "التي", "الذي", "كان", "كانت", "عملتها", "عملت", "لما", "قبل", "بعد", "انت", "انتا", "هاي", "هذي", "اخر", "اخير", "resume", "task", "continue", "the", "from", "where", "stopped", "please"));
         ArrayList<String> specificTerms = new ArrayList<>();
         for (String token : normalizedRequest.split("\\s+")) {
             if (token.length() >= 4 && !genericTerms.contains(token) && !specificTerms.contains(token)) specificTerms.add(token);
@@ -519,15 +684,38 @@ public final class BotStudioActivity extends Activity {
 
     private String formatTimestamp(long timestamp, long previousTimestamp) {
         if (timestamp <= 0) return "وقت غير معروف";
-        String base = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date(timestamp));
+        Date date = new Date(timestamp);
+        java.util.Calendar clock = java.util.Calendar.getInstance();
+        clock.setTime(date);
+        String period = clock.get(java.util.Calendar.HOUR_OF_DAY) < 12 ? "صباحًا" : "مساءً";
+        String base = new SimpleDateFormat("dd/MM/yyyy • hh:mm", Locale.getDefault()).format(date) + " " + period;
         if (previousTimestamp <= 0 || timestamp < previousTimestamp) return base;
         long gap = timestamp - previousTimestamp;
         String delta;
         if (gap < 1000L) delta = "0 ث";
-        else if (gap < 60000L) delta = (gap / 1000L) + " ث بعد السابقة";
-        else if (gap < 3600000L) delta = (gap / 60000L) + " د بعد السابقة";
-        else delta = (gap / 3600000L) + " س بعد السابقة";
+        else if (gap < 60000L) delta = (gap / 1000L) + " ث عن السابقة";
+        else if (gap < 3600000L) delta = (gap / 60000L) + " د عن السابقة";
+        else if (gap < 86400000L) delta = (gap / 3600000L) + " س عن السابقة";
+        else delta = (gap / 86400000L) + " يوم عن السابقة";
         return base + " • " + delta;
+    }
+
+    private String normalizeMessageBody(String input) {
+        if (input == null || input.isEmpty()) return "";
+        String value = input.replace("\r\n", "\n").replace('\r', '\n')
+                .replace('\u00a0', ' ').replace("\u200b", "").replace("\ufeff", "")
+                .replace('\u2028', '\n').replace('\u2029', '\n').replace('\u000b', '\n').replace('\u000c', '\n');
+        value = value.replaceAll("(?m)^[\\p{Z}\\p{C}]*$", "");
+        value = value.replaceAll("(?m)^[\\t \\p{Zs}]+$", "");
+        value = value.replaceAll("\\n{3,}", "\n\n").trim();
+        return value;
+    }
+
+    private String normalizeCodeBlockDisplay(String source) {
+        if (source == null || source.isEmpty()) return "";
+        String value = source.replace("\r\n", "\n").replace('\r', '\n');
+        value = value.replaceAll("(?m)^[\\t ]+$", "");
+        return value.replaceAll("\\n{4,}", "\n\n\n");
     }
 
     private void addFormattedMessageBody(LinearLayout parent, String body, int color) {
@@ -549,6 +737,9 @@ public final class BotStudioActivity extends Activity {
     private void addMessageText(LinearLayout parent, String textValue, int color) {
         if (textValue == null || textValue.trim().isEmpty()) return;
         TextView body = text(textValue.trim(), 13, color, false);
+        body.setGravity(Gravity.TOP | Gravity.RIGHT);
+        body.setIncludeFontPadding(false);
+        body.setLineSpacing(dp(1), 1.0f);
         body.setAutoLinkMask(Linkify.WEB_URLS); body.setLinkTextColor(CYAN); body.setMovementMethod(LinkMovementMethod.getInstance());
         body.setTextIsSelectable(true);
         parent.addView(body, top(matchWrap(), 4));
@@ -566,7 +757,7 @@ public final class BotStudioActivity extends Activity {
         copy.setOnClickListener(v -> copyToClipboard(language.isEmpty() ? "كود Botna" : language, code));
         HorizontalScrollView horizontal = new HorizontalScrollView(this); horizontal.setFillViewport(false); horizontal.setHorizontalScrollBarEnabled(true);
         box.addView(horizontal, top(matchWrap(), 4));
-        TextView codeView = text(code == null ? "" : code.replaceAll("\\n$", ""), 12, TEXT, false);
+        TextView codeView = text(normalizeCodeBlockDisplay(code), 12, TEXT, false);
         codeView.setTypeface(Typeface.MONOSPACE); codeView.setGravity(Gravity.LEFT | Gravity.TOP); codeView.setTextIsSelectable(true);
         codeView.setHorizontallyScrolling(true); codeView.setPadding(dp(5), dp(5), dp(5), dp(5));
         horizontal.addView(codeView, new HorizontalScrollView.LayoutParams(-2, -2));
@@ -695,8 +886,232 @@ public final class BotStudioActivity extends Activity {
     }
 
     private void selectSkillFile() {
-        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT); pick.addCategory(Intent.CATEGORY_OPENABLE); pick.setType("*/*");
-        startActivityForResult(pick, 4111);
+        String[] choices = {"استيراد من GitHub أو رابط HTTPS", "اقتراحات مهارات جاهزة", "استيراد ملف من الجهاز"};
+        new AlertDialog.Builder(this).setTitle("مصدر المهارة")
+                .setItems(choices, (dialog, which) -> {
+                    if (which == 0) showSkillUrlImportDialog();
+                    else if (which == 1) showSkillSuggestions();
+                    else {
+                        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        pick.addCategory(Intent.CATEGORY_OPENABLE);
+                        pick.setType("*/*");
+                        startActivityForResult(pick, 4111);
+                    }
+                }).show();
+    }
+
+    private void showSkillUrlImportDialog() {
+        EditText address = field("رابط GitHub أو SKILL.md أو Markdown على HTTPS", "");
+        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        address.setSingleLine(false);
+        address.setMinLines(2);
+        new AlertDialog.Builder(this).setTitle("استيراد مهارة من الإنترنت")
+                .setMessage("يدعم مستودع GitHub عام، أو رابط ملف RAW/Markdown/JSON عبر HTTPS. ستُستورد التعليمات كنص فقط، ولن ينفّذ Botna أي كود من المستودع.")
+                .setView(address).setNegativeButton("إلغاء", null).setPositiveButton("جلب المهارة", (dialog, which) -> {
+                    String url = address.getText() == null ? "" : address.getText().toString().trim();
+                    if (url.isEmpty() || !url.startsWith("https://")) {
+                        Toast.makeText(this, "أدخل رابط HTTPS صالحًا.", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    fetchAndImportSkill(url);
+                }).show();
+    }
+
+    private void showSkillSuggestions() {
+        String[] titles = {"التنقل والتعامل مع التطبيقات", "التصحيح بعد فشل الإجراء", "البحث والتحقق من المصادر", "استخراج وتحليل الملفات", "تأكيد الشاشة قبل النقر", "التوقف الآمن للإجراءات الحساسة"};
+        String[] descriptions = {"خطوات عملية للتحكم بالتطبيقات", "منع تكرار الفعل الفاشل", "استخدام الإنترنت مع ذكر المصدر والوقت", "قراءة البيانات المنظمة دون اختلاق قيم", "التأكد من النص والعنصر قبل الضغط", "طلب موافقة المستخدم قبل الأثر الخارجي"};
+        String[] guidance = {
+                "قسّم الهدف إلى فعل واحد في كل مرة. اقرأ الشاشة بعد كل فعل، وتأكد من التطبيق والزر قبل المتابعة. لا تكرر خطوة إذا لم يتغير السياق.",
+                "عند فشل فعل أو عدم تغير الشاشة، سجّل النتيجة، ولا تكرر نفس النوع والمعلمات مباشرة. جرّب بديلًا تدعمه الشاشة، أو أوقف المهمة مع سبب واضح.",
+                "للمعلومات الحديثة استخدم أداة البحث المتاحة، وقارن المصادر، واذكر وقت الجلب. إذا فشل البحث فلا تقدم معلومات من الذاكرة على أنها آنية.",
+                "حلّل النصوص وJSON وCSV والملفات المكتبية التي يستطيع Botna استخراج محتواها. اذكر صراحةً الأنواع التي لا يمكن قراءتها بدل تخمين المحتوى.",
+                "قبل النقر، تحقق من لقطة شاشة حديثة أو عنصر إمكانية وصول مطابق. بعد النقر تحقق من العلامة المتوقعة، ولا تعلن النجاح اعتمادًا على إرسال الإيماءة وحده.",
+                "توقف واطلب موافقة واضحة قبل الدفع أو حذف البيانات أو النشر أو إرسال محتوى خارجي. لا تحاول تجاوز القيود أو تأكيدات النظام."
+        };
+        boolean[] checked = new boolean[titles.length];
+        new AlertDialog.Builder(this).setTitle("اقتراحات مهارات جاهزة")
+                .setMultiChoiceItems(titles, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setNegativeButton("إلغاء", null).setPositiveButton("إضافة المحددة", (dialog, which) -> {
+                    int added = 0;
+                    for (int i = 0; i < checked.length; i++) {
+                        if (!checked[i]) continue;
+                        BotStudioStore.Skill skill = store.saveCustomSkill(titles[i], descriptions[i], guidance[i]);
+                        store.setSkillEnabled(selectedBotId, skill.id, true);
+                        added++;
+                    }
+                    Toast.makeText(this, added == 0 ? "لم تحدد مهارة." : "تمت إضافة " + added + " مهارة وتفعيلها.", Toast.LENGTH_LONG).show();
+                    render();
+                }).show();
+    }
+
+    private void fetchAndImportSkill(String sourceUrl) {
+        Toast.makeText(this, "جارٍ جلب المهارة والتحقق من محتواها…", Toast.LENGTH_SHORT).show();
+        final String targetBotId = selectedBotId;
+        skillImportExecutor.execute(() -> {
+            ImportedSkillData result = null;
+            String failure = null;
+            try { result = fetchSkillFromUrl(sourceUrl); }
+            catch (Exception e) { failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+            ImportedSkillData finalResult = result;
+            String finalFailure = failure;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (finalResult == null) {
+                    new AlertDialog.Builder(this).setTitle("تعذر استيراد المهارة")
+                            .setMessage("لم يتم حفظ أي تعليمات.\\n" + finalFailure)
+                            .setPositiveButton("حسنًا", null).show();
+                    return;
+                }
+                String raw = finalResult.content;
+                String title = finalResult.title;
+                String description = finalResult.description;
+                String guidance = raw;
+                try {
+                    JSONObject obj = new JSONObject(raw);
+                    title = obj.optString("title", obj.optString("name", title));
+                    description = obj.optString("description", description);
+                    guidance = obj.optString("guidance", obj.optString("instructions", obj.optString("prompt", raw)));
+                } catch (Exception ignored) { }
+                if (guidance.trim().isEmpty()) {
+                    Toast.makeText(this, "الملف لا يحتوي على تعليمات مهارة قابلة للاستيراد.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                BotStudioStore.Skill skill = store.saveCustomSkill(title, description, guidance);
+                store.setSkillEnabled(targetBotId, skill.id, true);
+                Toast.makeText(this, "تم استيراد المهارة وتفعيلها للشخصية المختارة.", Toast.LENGTH_LONG).show();
+                render();
+            });
+        });
+    }
+
+    private ImportedSkillData fetchSkillFromUrl(String source) throws Exception {
+        URL input = new URL(source);
+        if (!"https".equalsIgnoreCase(input.getProtocol())) throw new IllegalArgumentException("يُسمح بروابط HTTPS فقط.");
+        String host = input.getHost().toLowerCase(Locale.ROOT);
+        String path = input.getPath() == null ? "" : input.getPath();
+        if (host.equals("github.com") || host.equals("www.github.com")) {
+            String[] parts = path.split("/");
+            if (parts.length >= 5 && ("blob".equals(parts[3]) || "raw".equals(parts[3]))) {
+                String rawPath = "";
+                if ("blob".equals(parts[3])) rawPath = "https://raw.githubusercontent.com/" + parts[1] + "/" + parts[2] + "/" + joinPath(parts, 4);
+                else rawPath = "https://raw.githubusercontent.com/" + parts[1] + "/" + parts[2] + "/" + joinPath(parts, 4);
+                String content = downloadSkillText(rawPath, 500000);
+                return new ImportedSkillData(skillTitleFromUrl(rawPath), "مهارة مستوردة من GitHub", normalizeRemoteContent(content));
+            }
+            if (parts.length >= 3 && !parts[1].isEmpty() && !parts[2].isEmpty()) {
+                String owner = parts[1], repo = parts[2];
+                String repoJson = downloadSkillText("https://api.github.com/repos/" + owner + "/" + repo, 500000);
+                String branch = new JSONObject(repoJson).optString("default_branch", "main");
+                String treeJson = downloadSkillText("https://api.github.com/repos/" + owner + "/" + repo + "/git/trees/" + branch + "?recursive=1", 1500000);
+                JSONArray tree = new JSONObject(treeJson).optJSONArray("tree");
+                if (tree == null) throw new IllegalStateException("لم أجد قائمة ملفات المستودع.");
+                ArrayList<String> candidates = new ArrayList<>();
+                for (int i = 0; i < tree.length(); i++) {
+                    JSONObject entry = tree.optJSONObject(i);
+                    if (entry == null || !"blob".equals(entry.optString("type"))) continue;
+                    String filePath = entry.optString("path", "");
+                    String lower = filePath.toLowerCase(Locale.ROOT);
+                    String basename = lower.substring(lower.lastIndexOf('/') + 1);
+                    if (basename.equals("skill.md") || basename.equals("agents.md") || basename.equals("instructions.md")
+                            || basename.equals("readme.md") || basename.endsWith(".skill.json")) candidates.add(filePath);
+                }
+                candidates.sort((a, b) -> Integer.compare(skillFileScore(b), skillFileScore(a)));
+                if (candidates.isEmpty()) throw new IllegalStateException("لم أجد SKILL.md أو README.md أو ملف تعليمات قابلًا للاستيراد.");
+                StringBuilder combined = new StringBuilder();
+                int fetched = 0;
+                for (String candidate : candidates) {
+                    if (fetched >= 3 || combined.length() >= 30000) break;
+                    String rawUrl = "https://raw.githubusercontent.com/" + owner + "/" + repo + "/" + branch + "/" + candidate.replace(" ", "%20");
+                    try {
+                        String content = downloadSkillText(rawUrl, 500000);
+                        if (content.trim().isEmpty()) continue;
+                        combined.append("\\n\\n--- ملف المهارة: ").append(candidate).append(" ---\\n")
+                                .append(normalizeRemoteContent(content));
+                        fetched++;
+                    } catch (Exception ignored) { }
+                }
+                if (combined.length() == 0) throw new IllegalStateException("وجدت ملفات مرشحة لكن تعذر تنزيل محتواها.");
+                String title = repo.replace('-', ' ').replace('_', ' ');
+                return new ImportedSkillData(title, "تعليمات مستوردة من المستودع العام " + owner + "/" + repo, combined.substring(0, Math.min(combined.length(), 30000)));
+            }
+        }
+        String content = downloadSkillText(source, 500000);
+        if (content.trim().isEmpty()) throw new IllegalStateException("المحتوى المسترجع فارغ.");
+        return new ImportedSkillData(skillTitleFromUrl(source), "مهارة مستوردة من رابط HTTPS", normalizeRemoteContent(content));
+    }
+
+    private static final class ImportedSkillData {
+        final String title;
+        final String description;
+        final String content;
+        ImportedSkillData(String title, String description, String content) { this.title = title; this.description = description; this.content = content; }
+    }
+
+    private static int skillFileScore(String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        String name = lower.substring(lower.lastIndexOf('/') + 1);
+        int score = name.equals("skill.md") ? 100 : name.endsWith(".skill.json") ? 95 : name.equals("instructions.md") ? 88
+                : name.equals("agents.md") ? 84 : name.equals("readme.md") ? 40 : 0;
+        if (lower.contains("/skills/") || lower.startsWith("skills/")) score += 30;
+        if (lower.contains("/examples/") || lower.contains("/test/")) score -= 20;
+        return score;
+    }
+
+    private static String joinPath(String[] parts, int start) {
+        StringBuilder out = new StringBuilder();
+        for (int i = start; i < parts.length; i++) { if (out.length() > 0) out.append('/'); out.append(parts[i]); }
+        return out.toString();
+    }
+
+    private static String skillTitleFromUrl(String source) {
+        try {
+            URL url = new URL(source);
+            String path = url.getPath();
+            if (path == null || path.trim().isEmpty()) return "مهارة مستوردة";
+            String name = path.substring(path.lastIndexOf('/') + 1).replace('-', ' ').replace('_', ' ');
+            return name.replaceFirst("\\.[^.]+$", "").trim().isEmpty() ? "مهارة مستوردة" : name.replaceFirst("\\.[^.]+$", "").trim();
+        } catch (Exception ignored) { return "مهارة مستوردة"; }
+    }
+
+    private static String normalizeRemoteContent(String raw) {
+        if (raw == null) return "";
+        String value = raw.replace("\r\n", "\n").replace('\r', '\n');
+        if (value.trim().startsWith("<!DOCTYPE html") || value.trim().startsWith("<html") || value.contains("<html")) {
+            value = value.replaceAll("(?is)<script[^>]*>.*?</script>", " ")
+                    .replaceAll("(?is)<style[^>]*>.*?</style>", " ")
+                    .replaceAll("(?s)<[^>]+>", " ");
+            value = android.text.Html.fromHtml(value, android.text.Html.FROM_HTML_MODE_LEGACY).toString();
+        }
+        value = value.replaceAll("\\n{4,}", "\n\n\n").trim();
+        return value.length() > 30000 ? value.substring(0, 30000) : value;
+    }
+
+    private static String downloadSkillText(String urlText, int maxBytes) throws Exception {
+        URL url = new URL(urlText);
+        if (!"https".equalsIgnoreCase(url.getProtocol())) throw new IllegalArgumentException("الرابط النهائي يجب أن يستخدم HTTPS.");
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        try {
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(12000);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("User-Agent", "Botna-Android/0.23.6");
+            connection.setRequestProperty("Accept", "application/vnd.github+json,text/markdown,text/plain,application/json,text/html,*/*");
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) throw new IllegalStateException("HTTP " + code + " أثناء تنزيل المهارة.");
+            URL finalUrl = connection.getURL();
+            if (!"https".equalsIgnoreCase(finalUrl.getProtocol())) throw new IllegalStateException("تم رفض إعادة توجيه غير مشفرة.");
+            try (InputStream input = connection.getInputStream(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int count; int total = 0;
+                while ((count = input.read(buffer)) != -1) {
+                    total += count;
+                    if (total > maxBytes) throw new IllegalStateException("حجم محتوى المهارة أكبر من الحد الآمن.");
+                    output.write(buffer, 0, count);
+                }
+                return new String(output.toByteArray(), StandardCharsets.UTF_8);
+            }
+        } finally { connection.disconnect(); }
     }
 
     private void importSkillFile(String path) {
@@ -879,8 +1294,44 @@ public final class BotStudioActivity extends Activity {
         EditText e = new EditText(this); e.setTextColor(TEXT); e.setHintTextColor(MUTED); e.setHint(hint); e.setText(value); e.setTextSize(14);
         e.setPadding(dp(10), dp(8), dp(10), dp(8)); e.setBackground(shape(FIELD, CYAN, 1, 10)); e.setSingleLine(false); return e;
     }
+    private static final class CappedScrollView extends ScrollView {
+        private final int maxHeightPx;
+        CappedScrollView(Context context, int maxHeightPx) {
+            super(context);
+            this.maxHeightPx = Math.max(1, maxHeightPx);
+        }
+        @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            int cappedHeightSpec = View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.AT_MOST);
+            super.onMeasure(widthMeasureSpec, cappedHeightSpec);
+        }
+    }
+
     private LinearLayout card() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); l.setPadding(dp(12), dp(12), dp(12), dp(12)); l.setBackground(shape(CARD, Color.rgb(34, 128, 148), 1, 18)); return l; }
-    private Button button(String label) { Button b = new Button(this); b.setText(label); b.setTextSize(13); b.setTextColor(TEXT); b.setAllCaps(false); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setPadding(dp(6), dp(4), dp(6), dp(4)); b.setBackground(shape(Color.rgb(14, 67, 94), CYAN, 1, 13)); return b; }
+    private Button button(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(13);
+        b.setTextColor(TEXT);
+        b.setAllCaps(false);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setPadding(dp(6), dp(4), dp(6), dp(4));
+        android.graphics.drawable.StateListDrawable states = new android.graphics.drawable.StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_pressed}, glassButtonShape(true));
+        states.addState(new int[]{android.R.attr.state_enabled}, glassButtonShape(false));
+        states.addState(new int[]{}, glassButtonShape(false));
+        b.setBackground(states);
+        b.setElevation(dp(2));
+        return b;
+    }
+
+    private GradientDrawable glassButtonShape(boolean pressed) {
+        int top = pressed ? Color.argb(174, 40, 194, 224) : Color.argb(112, 24, 130, 170);
+        int bottom = pressed ? Color.argb(150, 12, 66, 101) : Color.argb(72, 7, 31, 54);
+        GradientDrawable glass = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+        glass.setCornerRadius(dp(18));
+        glass.setStroke(dp(1), Color.argb(220, 43, 211, 236));
+        return glass;
+    }
     private TextView text(String value, int size, int color, boolean bold) { TextView t = new TextView(this); t.setText(value); t.setTextSize(size); t.setTextColor(color); t.setGravity(Gravity.RIGHT); if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return t; }
     private View divider() { View v = new View(this); v.setBackgroundColor(Color.rgb(31, 62, 76)); v.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(1))); return v; }
     private GradientDrawable shape(int fill, int stroke, float width, int radius) { GradientDrawable g = new GradientDrawable(); g.setColor(fill); g.setCornerRadius(dp(radius)); g.setStroke(dp(Math.max(1, Math.round(width))), stroke); return g; }
