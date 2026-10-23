@@ -7,6 +7,8 @@ import android.content.ComponentName;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -29,6 +31,7 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ImageView;
+import android.widget.HorizontalScrollView;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -40,6 +43,10 @@ import org.json.JSONObject;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.util.Date;
+import java.text.SimpleDateFormat;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import androidx.core.content.FileProvider;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -64,6 +71,8 @@ public final class BotStudioActivity extends Activity {
     private EditText chatInput;
     private TextView chatStatus;
     private Button sendChatButton;
+    private int chatHistoryLimit = 120;
+    private boolean showOlderAfterReload;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -287,21 +296,39 @@ public final class BotStudioActivity extends Activity {
         LinearLayout messages = new LinearLayout(this); messages.setOrientation(LinearLayout.VERTICAL); messages.setPadding(0, dp(3), 0, dp(5)); chatScroll.addView(messages, new ScrollView.LayoutParams(-1, -2));
         LinearLayout.LayoutParams chatScrollLp = new LinearLayout.LayoutParams(-1, dp(420)); chatScrollLp.topMargin = dp(8); panel.addView(chatScroll, chatScrollLp);
         chatScroll.setOnTouchListener((v, event) -> {
-            if (event.getAction() == android.view.MotionEvent.ACTION_MOVE) chatScroll.getParent().requestDisallowInterceptTouchEvent(true);
-            if (event.getAction() == android.view.MotionEvent.ACTION_UP || event.getAction() == android.view.MotionEvent.ACTION_CANCEL) chatScroll.getParent().requestDisallowInterceptTouchEvent(false);
+            if (event.getAction() == android.view.MotionEvent.ACTION_MOVE && chatScroll.getParent() != null) chatScroll.getParent().requestDisallowInterceptTouchEvent(true);
+            if ((event.getAction() == android.view.MotionEvent.ACTION_UP || event.getAction() == android.view.MotionEvent.ACTION_CANCEL) && chatScroll.getParent() != null) chatScroll.getParent().requestDisallowInterceptTouchEvent(false);
             return false;
         });
-        JSONArray history = store.messages(selectedBotId, 120);
+        int totalMessages = store.messageCount(selectedBotId);
+        int loadedLimit = Math.min(Math.max(120, chatHistoryLimit), 10000);
+        JSONArray history = store.messages(selectedBotId, loadedLimit);
+        if (totalMessages > history.length()) {
+            Button older = button("↑ تحميل الرسائل الأقدم (" + (totalMessages - history.length()) + ")");
+            messages.addView(older, top(matchWrap(), 5));
+            older.setOnClickListener(v -> { chatHistoryLimit = Math.min(10000, chatHistoryLimit + 120); showOlderAfterReload = true; render(); });
+        }
         int renderedPreviews = 0;
+        long priorDisplayedTimestamp = -1L;
         for (int i = 0; i < history.length(); i++) {
             JSONObject msg = history.optJSONObject(i); if (msg == null) continue;
             boolean user = "user".equals(msg.optString("role"));
+            String body = msg.optString("body", "");
+            long timestamp = msg.optLong("time", 0L);
             LinearLayout messageCard = new LinearLayout(this); messageCard.setOrientation(LinearLayout.VERTICAL); messageCard.setPadding(dp(10), dp(8), dp(10), dp(8));
             messageCard.setBackground(shape(user ? Color.rgb(14, 54, 79) : FIELD, Color.rgb(38, 80, 100), 1, 12));
             LinearLayout.LayoutParams cardLp = matchWrap(); cardLp.topMargin = dp(5); messages.addView(messageCard, cardLp);
-            TextView bubble = text((user ? "أنت: " : bot.optString("name", "البوت") + ": ") + msg.optString("body"), 13, user ? TEXT : MUTED, false);
-            bubble.setAutoLinkMask(Linkify.WEB_URLS); bubble.setLinkTextColor(CYAN); bubble.setMovementMethod(LinkMovementMethod.getInstance());
-            messageCard.addView(bubble, matchWrap());
+            LinearLayout meta = new LinearLayout(this); meta.setOrientation(LinearLayout.HORIZONTAL); meta.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); meta.setGravity(Gravity.CENTER_VERTICAL);
+            messageCard.addView(meta, matchWrap());
+            Button copyWhole = button("⧉"); copyWhole.setTextSize(13); copyWhole.setContentDescription("نسخ الرسالة كاملة"); copyWhole.setBackground(shape(Color.rgb(8, 25, 36), Color.rgb(53, 125, 148), 1, 12));
+            meta.addView(copyWhole, new LinearLayout.LayoutParams(dp(38), dp(32)));
+            copyWhole.setOnClickListener(v -> copyToClipboard("رسالة Botna", body));
+            TextView stamp = text(formatTimestamp(timestamp, priorDisplayedTimestamp), 10, MUTED, false); stamp.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams stampLp = new LinearLayout.LayoutParams(0, -2, 1f); stampLp.leftMargin = dp(8); meta.addView(stamp, stampLp);
+            TextView author = text(user ? "أنت" : bot.optString("name", "البوت"), 11, user ? CYAN : TEXT, true);
+            meta.addView(author, top(matchWrap(), 0));
+            addFormattedMessageBody(messageCard, body, user ? TEXT : MUTED);
+            priorDisplayedTimestamp = timestamp;
             String attachment = msg.optString("image", "");
             if (!attachment.isEmpty() && new File(attachment).isFile()) {
                 if ((BotStudioStore.isImageAttachment(attachment) || BotStudioStore.isPdfAttachment(attachment)) && renderedPreviews < 12) {
@@ -313,14 +340,12 @@ public final class BotStudioActivity extends Activity {
                         messageCard.addView(thumbnail, top(matchWrap(), 6));
                         thumbnail.setOnClickListener(v -> showAttachmentPreview(attachment));
                         if (BotStudioStore.isPdfAttachment(attachment)) {
-                            Button openOriginal = button("فتح ملف PDF الأصلي");
-                            messageCard.addView(openOriginal, top(matchWrap(), 5));
+                            Button openOriginal = button("فتح ملف PDF الأصلي"); messageCard.addView(openOriginal, top(matchWrap(), 5));
                             openOriginal.setOnClickListener(v -> shareAttachment(attachment));
                         }
                     } else {
                         Button openOriginal = button("📄  فتح الملف الأصلي: " + BotStudioStore.attachmentName(attachment));
-                        messageCard.addView(openOriginal, top(matchWrap(), 6));
-                        openOriginal.setOnClickListener(v -> shareAttachment(attachment));
+                        messageCard.addView(openOriginal, top(matchWrap(), 6)); openOriginal.setOnClickListener(v -> shareAttachment(attachment));
                     }
                 } else {
                     Button file = button("📄  " + BotStudioStore.attachmentName(attachment) + "\n" + BotStudioStore.attachmentMime(attachment));
@@ -336,12 +361,17 @@ public final class BotStudioActivity extends Activity {
                 }
             }
         }
+        if (showOlderAfterReload) { showOlderAfterReload = false; chatScroll.post(() -> chatScroll.scrollTo(0, 0)); }
+        else chatScroll.post(() -> chatScroll.smoothScrollTo(0, messages.getHeight()));
         chatStatus = text(chatBusy ? "جارٍ الحصول على رد البوت..." : (attachedFilePath.isEmpty() ? "أرفق صورة أو ملفًا أو استخدم الميكروفون." : "المرفق: " + attachedFileName), 11, CYAN, false);
         panel.addView(chatStatus, top(matchWrap(), 5));
+        LinearLayout composer = new LinearLayout(this); composer.setOrientation(LinearLayout.VERTICAL); composer.setPadding(dp(8), dp(6), dp(8), dp(7));
+        composer.setBackground(shape(FIELD, CYAN, 1.2f, 22)); panel.addView(composer, top(matchWrap(), 6));
         chatInput = new EditText(this); chatInput.setTextColor(TEXT); chatInput.setHintTextColor(MUTED); chatInput.setTextSize(14); chatInput.setGravity(Gravity.TOP | Gravity.START);
-        chatInput.setMinLines(2); chatInput.setMaxLines(6); chatInput.setHint("احكي مع البوت باللهجة اللي بتحبها..."); chatInput.setPadding(dp(10), dp(10), dp(10), dp(10)); chatInput.setBackground(shape(FIELD, CYAN, 1, 20));
-        panel.addView(chatInput, top(matchWrap(), 6));
-        LinearLayout controls = new LinearLayout(this); controls.setOrientation(LinearLayout.HORIZONTAL); controls.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); controls.setGravity(Gravity.CENTER_VERTICAL); panel.addView(controls, top(matchWrap(), 6));
+        chatInput.setMinLines(2); chatInput.setMaxLines(6); chatInput.setHint("احكي مع البوت باللهجة اللي بتحبها..."); chatInput.setPadding(dp(8), dp(7), dp(8), dp(7)); chatInput.setBackgroundColor(Color.TRANSPARENT);
+        composer.addView(chatInput, matchWrap());
+        LinearLayout controls = new LinearLayout(this); controls.setOrientation(LinearLayout.HORIZONTAL); controls.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); controls.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams controlsLp = top(matchWrap(), 4); composer.addView(controls, controlsLp);
         sendChatButton = button("↑"); sendChatButton.setTextSize(25); sendChatButton.setContentDescription("إرسال إلى البوت"); sendChatButton.setBackground(shape(Color.rgb(15, 70, 100), CYAN, 1.2f, 28));
         Button voice = button("🎙"); voice.setTextSize(20); voice.setContentDescription("إملاء صوتي"); voice.setBackground(shape(Color.rgb(8, 25, 36), Color.rgb(69, 137, 163), 1, 28));
         Button attach = button("＋"); attach.setTextSize(24); attach.setContentDescription("إرفاق ملف أو صورة"); attach.setBackground(shape(Color.rgb(8, 25, 36), Color.rgb(69, 137, 163), 1, 28));
@@ -365,10 +395,27 @@ public final class BotStudioActivity extends Activity {
         final String filePath = attachedFilePath;
         final String fileName = attachedFileName;
         final String fileMime = attachedFileMime;
-        final String priorContext = conversationContext(store.messages(requestBotId, 24));
         attachedFilePath = ""; attachedFileName = ""; attachedFileMime = "";
         store.addMessage(requestBotId, "user", message, filePath, "");
         if (chatInput != null) chatInput.setText("");
+        if (isResumeAutomationRequest(message)) {
+            chatBusy = true;
+            render();
+            chatExecutor.execute(() -> {
+                JSONObject checkpoint = findCheckpointForResume(requestBotId, message);
+                runOnUiThread(() -> {
+                    chatBusy = false;
+                    if (checkpoint == null) {
+                        store.addMessage(requestBotId, "assistant", "لا أستطيع استئناف المهمة: لم أجد نقطة استئناف محفوظة لهذه الشخصية. لم أدّعِ أن التحكم بدأ أو أنني أرى الشاشة.", "", BotnaAICompiler.model(this));
+                        if (requestBotId.equals(selectedBotId)) render();
+                    } else {
+                        if (requestBotId.equals(selectedBotId)) render();
+                        resumeCheckpoint(checkpoint);
+                    }
+                });
+            });
+            return;
+        }
         if (isAutomationTaskRequest(message)) {
             chatBusy = true;
             render();
@@ -381,7 +428,6 @@ public final class BotStudioActivity extends Activity {
             });
             return;
         }
-        final String requestTextBase = priorContext + "\n\nالرسالة الحالية للمستخدم: " + message;
         chatBusy = true; render();
         final String modelUsed = BotnaAICompiler.model(this);
         final String thinkingLevel = BotStudioStore.thinkingLevel(this);
@@ -389,7 +435,24 @@ public final class BotStudioActivity extends Activity {
             Bitmap image = null;
             String response;
             try {
-                String requestText = requestTextBase;
+                String requestText = store.contextForChat(requestBotId, message, 26000)
+                        + "\n" + BotnaAccessibilityService.agentRuntimeStatus(this)
+                        + "\nالوقت الحالي على الجهاز: " + BotnaWebTools.currentTimeText()
+                        + ". استخدم الوقت لحساب الفواصل. هذه المحادثة لا تحتوي على لقطة شاشة حية إلا إذا أُرفقت صورة واضحة في الطلب نفسه."
+                        + "\n\nالرسالة الحالية التي يجب الإجابة عنها: " + message;
+                String localToolResult = BotnaWebTools.localToolContext(message);
+                if (!localToolResult.isEmpty()) requestText += "\n\n--- نتيجة أداة محلية ---\n" + localToolResult + "\n--- نهاية نتيجة الأداة ---\nاستخدم نتيجة الأداة كما هي عند الإجابة، ولا تدّع أن الأداة نفذت كودًا عامًا.";
+                if (BotnaWebTools.shouldSearch(message)) {
+                    try {
+                        String liveResults = BotnaWebTools.searchContext(message);
+                        requestText += "\n\n--- نتائج أداة البحث المباشر ---\n" + liveResults
+                                + "\n--- نهاية نتائج البحث ---\nاعتمد على هذه البيانات عند الإجابة عن الجزء الحالي، واذكر وقت الجلب والمصدر. إذا كانت النتائج غير كافية أو متعارضة فصرّح بذلك، ولا تستبدلها بسعر أو معلومة حالية من الذاكرة.";
+                    } catch (Exception searchFailure) {
+                        requestText += "\n\n[حاول Botna البحث عبر الإنترنت لكنه فشل: "
+                                + (searchFailure.getMessage() == null ? searchFailure.getClass().getSimpleName() : searchFailure.getMessage())
+                                + "]. أبلغ المستخدم أن البحث المباشر لم ينجح، ولا تقدّم الأرقام الحالية على أنها مؤكدة.";
+                    }
+                }
                 if (!filePath.isEmpty()) {
                     String fileText = BotStudioStore.readAttachmentText(filePath);
                     StringBuilder attachmentContext = new StringBuilder("\n\n[مرفق المستخدم: ").append(fileName).append("؛ نوع الملف: ").append(fileMime).append("]");
@@ -408,6 +471,105 @@ public final class BotStudioActivity extends Activity {
             final String answer = response == null ? "لم يصل رد نصي من المزوّد." : response;
             runOnUiThread(() -> { chatBusy = false; store.addMessage(requestBotId, "assistant", answer, "", modelUsed); if (requestBotId.equals(selectedBotId)) render(); });
         });
+    }
+
+    private boolean isResumeAutomationRequest(String raw) {
+        String value = BotnaArabicDialect.normalize(raw == null ? "" : raw);
+        String[] phrases = {"كمل المهمه", "اكمل المهمه", "استأنف المهمه", "استأنف المهمة", "تابع المهمه", "واصل المهمه", "كمل من وين وقفت", "كمل من حيث توقفت", "كمل الوكيل", "استأنف الوكيل", "تابع تنفيذ المهمه", "resume task", "continue the task", "resume the task"};
+        for (String phrase : phrases) if (value.contains(BotnaArabicDialect.normalize(phrase))) return true;
+        return false;
+    }
+
+    private JSONObject findCheckpointForResume(String botId, String request) {
+        JSONArray checkpoints = store.checkpoints(true);
+        String normalizedRequest = BotnaArabicDialect.normalize(request == null ? "" : request);
+        java.util.HashSet<String> genericTerms = new java.util.HashSet<>(java.util.Arrays.asList(
+                "كمل", "اكمل", "استأنف", "تابع", "واصل", "المهمه", "مهمه", "تنفيذ", "الوكيل", "بوتنا", "من", "وين", "حيث", "وقفت", "توقفت", "ارجع", "كنت", "شغال", "شغاله", "عليها", "عليه", "معها", "معه", "التي", "الذي", "كان", "كانت", "عملتها", "عملت", "لما", "قبل", "بعد", "انت", "انتا", "هاي", "هذي", "اخر", "اخير", "resume", "task", "continue", "the", "from", "where", "stopped", "please"));
+        ArrayList<String> specificTerms = new ArrayList<>();
+        for (String token : normalizedRequest.split("\\s+")) {
+            if (token.length() >= 4 && !genericTerms.contains(token) && !specificTerms.contains(token)) specificTerms.add(token);
+        }
+        JSONObject best = null; int bestScore = -1;
+        for (int i = 0; i < checkpoints.length(); i++) {
+            JSONObject cp = checkpoints.optJSONObject(i); if (cp == null) continue;
+            String taskId = cp.optString("taskId", "");
+            String linkedBot = BotStudioStore.botForTask(this, taskId);
+            if (!linkedBot.isEmpty() && !linkedBot.equals(botId)) continue;
+            String state = cp.optString("state", "");
+            if ("completed".equalsIgnoreCase(state)) continue;
+            String goal = BotnaArabicDialect.normalize(cp.optString("goal", ""));
+            int score = 0;
+            if (!normalizedRequest.isEmpty() && normalizedRequest.length() >= 8 && goal.contains(normalizedRequest)) score += 10;
+            for (String token : specificTerms) if (goal.contains(token)) score += 3;
+            if (specificTerms.isEmpty()) score = 1;
+            if (score > bestScore) { bestScore = score; best = cp; }
+        }
+        if (best != null && !specificTerms.isEmpty() && bestScore <= 0) return null;
+        return best;
+    }
+
+    private void copyToClipboard(String label, String value) {
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard == null) throw new IllegalStateException("خدمة النسخ غير متاحة");
+            clipboard.setPrimaryClip(ClipData.newPlainText(label, value == null ? "" : value));
+            Toast.makeText(this, "تم نسخ النص", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) { Toast.makeText(this, "تعذر نسخ الرسالة", Toast.LENGTH_SHORT).show(); }
+    }
+
+    private String formatTimestamp(long timestamp, long previousTimestamp) {
+        if (timestamp <= 0) return "وقت غير معروف";
+        String base = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date(timestamp));
+        if (previousTimestamp <= 0 || timestamp < previousTimestamp) return base;
+        long gap = timestamp - previousTimestamp;
+        String delta;
+        if (gap < 1000L) delta = "0 ث";
+        else if (gap < 60000L) delta = (gap / 1000L) + " ث بعد السابقة";
+        else if (gap < 3600000L) delta = (gap / 60000L) + " د بعد السابقة";
+        else delta = (gap / 3600000L) + " س بعد السابقة";
+        return base + " • " + delta;
+    }
+
+    private void addFormattedMessageBody(LinearLayout parent, String body, int color) {
+        String source = body == null ? "" : body;
+        Pattern codePattern = Pattern.compile("(?s)```([^\\r\\n`]*)\\s*\\r?\\n(.*?)```");
+        Matcher matcher = codePattern.matcher(source);
+        int cursor = 0;
+        boolean found = false;
+        while (matcher.find()) {
+            found = true;
+            if (matcher.start() > cursor) addMessageText(parent, source.substring(cursor, matcher.start()), color);
+            addCodeBlock(parent, matcher.group(1).trim(), matcher.group(2));
+            cursor = matcher.end();
+        }
+        if (!found) { addMessageText(parent, source, color); return; }
+        if (cursor < source.length()) addMessageText(parent, source.substring(cursor), color);
+    }
+
+    private void addMessageText(LinearLayout parent, String textValue, int color) {
+        if (textValue == null || textValue.trim().isEmpty()) return;
+        TextView body = text(textValue.trim(), 13, color, false);
+        body.setAutoLinkMask(Linkify.WEB_URLS); body.setLinkTextColor(CYAN); body.setMovementMethod(LinkMovementMethod.getInstance());
+        body.setTextIsSelectable(true);
+        parent.addView(body, top(matchWrap(), 4));
+    }
+
+    private void addCodeBlock(LinearLayout parent, String language, String code) {
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(8), dp(6), dp(8), dp(6));
+        box.setBackground(shape(Color.rgb(4, 10, 17), Color.rgb(48, 112, 136), 1, 10));
+        parent.addView(box, top(matchWrap(), 6));
+        LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.HORIZONTAL); header.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); header.setGravity(Gravity.CENTER_VERTICAL);
+        box.addView(header, matchWrap());
+        TextView lang = text(language.isEmpty() ? "CODE" : language, 10, CYAN, true); lang.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        header.addView(lang, new LinearLayout.LayoutParams(0, dp(28), 1f));
+        Button copy = button("نسخ الكود ⧉"); copy.setTextSize(10); header.addView(copy, new LinearLayout.LayoutParams(-2, dp(30)));
+        copy.setOnClickListener(v -> copyToClipboard(language.isEmpty() ? "كود Botna" : language, code));
+        HorizontalScrollView horizontal = new HorizontalScrollView(this); horizontal.setFillViewport(false); horizontal.setHorizontalScrollBarEnabled(true);
+        box.addView(horizontal, top(matchWrap(), 4));
+        TextView codeView = text(code == null ? "" : code.replaceAll("\\n$", ""), 12, TEXT, false);
+        codeView.setTypeface(Typeface.MONOSPACE); codeView.setGravity(Gravity.LEFT | Gravity.TOP); codeView.setTextIsSelectable(true);
+        codeView.setHorizontallyScrolling(true); codeView.setPadding(dp(5), dp(5), dp(5), dp(5));
+        horizontal.addView(codeView, new HorizontalScrollView.LayoutParams(-2, -2));
     }
 
     private String conversationContext(JSONArray messages) {
@@ -482,23 +644,32 @@ public final class BotStudioActivity extends Activity {
     }
 
     private void startTaskFromChat(String botId, String goal, String attachmentPath, String effectiveGoal) {
-        if (!accessibilityEnabled()) {
+        if (!accessibilityEnabled() || !BotnaAccessibilityService.isServiceActuallyConnected(this)) {
             String id = BotnaAgentStore.createTask(this, effectiveGoal);
             BotStudioStore.associateTaskWithBot(this, id, botId);
             getSharedPreferences(BotnaAICompiler.PREFS, MODE_PRIVATE).edit().putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, effectiveGoal)
-                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id).apply();
-            store.addMessage(botId, "assistant", "حُفظت المهمة بانتظار تفعيل خدمة إمكانية الوصول. فعّل الخدمة ثم ستبدأ المهمة.", "", BotnaAICompiler.model(this));
-            render(); startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-            Toast.makeText(this, "فعّل خدمة Botna لبدء المهمة. لم يبدأ التحكم بعد.", Toast.LENGTH_LONG).show();
+                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id)
+                    .putBoolean(BotnaAccessibilityService.PREF_PENDING_SMART_RESUME, false).apply();
+            String reason = !accessibilityEnabled()
+                    ? "حُفظت المهمة بانتظار تفعيل خدمة إمكانية الوصول. لم يبدأ التحكم بعد ولا توجد لقطة شاشة."
+                    : "حُفظت المهمة، لكن خدمة إمكانية الوصول ليست متصلة فعليًا الآن. لم يبدأ التحكم بعد ولا توجد لقطة شاشة مؤكدة؛ ستبدأ محاولة التنفيذ فقط عند إعادة اتصال الخدمة.";
+            store.addMessage(botId, "assistant", reason, "", BotnaAICompiler.model(this));
+            render();
+            try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); } catch (Exception ignored) { }
+            Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
             return;
         }
         String id = BotnaAgentStore.createTask(this, effectiveGoal);
         BotStudioStore.associateTaskWithBot(this, id, botId);
-        String taskNote = "بدأ الوكيل تنفيذ المهمة على الهاتف. سيعود بنتيجة مفصلة أو سبب التوقف في هذه المحادثة.\nالهدف: " + goal;
+        getSharedPreferences(BotnaAICompiler.PREFS, MODE_PRIVATE).edit()
+                .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, effectiveGoal)
+                .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id)
+                .putBoolean(BotnaAccessibilityService.PREF_PENDING_SMART_RESUME, false).apply();
+        String taskNote = "أُرسلت المهمة إلى خدمة الوكيل؛ لم أعتبر التنفيذ بدأ فعليًا بعد. سيبدأ الوكيل فقط عندما يستقبل المهمة ويلتقط لقطة شاشة جديدة بنجاح، ثم سيرسل النتيجة أو سبب الفشل إلى هذه المحادثة.\nالهدف: " + goal;
         if (attachmentPath != null && !attachmentPath.isEmpty()) taskNote += "\nالمرفق المرتبط بالطلب: " + BotStudioStore.attachmentName(attachmentPath);
         store.addMessage(botId, "assistant", taskNote, "", BotnaAICompiler.model(this));
         sendBroadcast(new Intent(BotnaAccessibilityService.ACTION_START_SMART_TASK).setPackage(getPackageName()).putExtra("task", effectiveGoal).putExtra("agentTaskId", id));
-        Toast.makeText(this, "بدأت المهمة. سيواصل الوكيل العمل في الخلفية.", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "أُرسلت المهمة؛ ينتظر Botna تأكيد استلامها والتقاط الشاشة.", Toast.LENGTH_SHORT).show();
         moveTaskToBack(true);
         finish();
     }
@@ -640,11 +811,11 @@ public final class BotStudioActivity extends Activity {
     }
 
     private void dispatchTask(String goal, String id) {
-        if (!accessibilityEnabled()) {
+        if (!accessibilityEnabled() || !BotnaAccessibilityService.isServiceActuallyConnected(this)) {
             getSharedPreferences(BotnaAICompiler.PREFS, MODE_PRIVATE).edit().putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, goal)
-                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id).apply();
+                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id).putBoolean(BotnaAccessibilityService.PREF_PENDING_SMART_RESUME, false).apply();
             startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-            Toast.makeText(this, "تم حفظ المهمة. فعّل خدمة Botna ثم ستبدأ المهمة.", Toast.LENGTH_LONG).show(); return;
+            Toast.makeText(this, !accessibilityEnabled() ? "تم حفظ المهمة. فعّل خدمة Botna ثم ستبدأ." : "خدمة Botna غير متصلة فعليًا الآن. حفظت المهمة بانتظار إعادة اتصال الخدمة؛ لم يبدأ التحكم بعد.", Toast.LENGTH_LONG).show(); return;
         }
         sendBroadcast(new Intent(BotnaAccessibilityService.ACTION_START_SMART_TASK).setPackage(getPackageName()).putExtra("task", goal).putExtra("agentTaskId", id));
         Toast.makeText(this, "أُرسلت المهمة إلى الوكيل.", Toast.LENGTH_SHORT).show();
@@ -652,10 +823,32 @@ public final class BotStudioActivity extends Activity {
 
     private void resumeCheckpoint(JSONObject cp) {
         String id = cp.optString("taskId", ""), goal = cp.optString("goal", "");
-        if (id.isEmpty() || goal.isEmpty()) { Toast.makeText(this, "نقطة الاستئناف غير مكتملة.", Toast.LENGTH_LONG).show(); return; }
-        if (!accessibilityEnabled()) { Toast.makeText(this, "فعّل خدمة إمكانية الوصول قبل الاستئناف.", Toast.LENGTH_LONG).show(); startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); return; }
+        if (id.isEmpty() || goal.isEmpty()) { Toast.makeText(this, "نقطة الاستئناف غير مكتملة؛ لم يبدأ التنفيذ.", Toast.LENGTH_LONG).show(); return; }
+        String botId = BotStudioStore.botForTask(this, id);
+        if (botId.isEmpty()) botId = selectedBotId;
+        if (!accessibilityEnabled() || !BotnaAccessibilityService.isServiceActuallyConnected(this)) {
+            getSharedPreferences(BotnaAICompiler.PREFS, MODE_PRIVATE).edit()
+                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, goal)
+                    .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id)
+                    .putBoolean(BotnaAccessibilityService.PREF_PENDING_SMART_RESUME, true).apply();
+            String reason = !accessibilityEnabled()
+                    ? "فشل الاستئناف الآن: خدمة إمكانية الوصول غير مفعلة. حفظت الطلب بانتظار تفعيلها؛ لم يتم التحكم بالهاتف ولم أحصل على لقطة شاشة."
+                    : "خدمة إمكانية الوصول مفعلة في إعدادات أندرويد لكنها غير متصلة فعليًا الآن. حفظت طلب الاستئناف لمحاولة واحدة عند إعادة اتصال الخدمة؛ لا توجد لقطة شاشة حية مؤكدة حاليًا.";
+            if (!botId.isEmpty()) store.addMessage(botId, "assistant", "⚠️ لم يبدأ الاستئناف بعد\n" + reason, "", BotnaAICompiler.model(this));
+            Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+            try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); } catch (Exception ignored) { }
+            if (botId.equals(selectedBotId) && "chat".equals(section)) render();
+            return;
+        }
+        if (!botId.isEmpty()) store.addMessage(botId, "assistant", "طلبت استئناف المهمة: " + goal
+                + "\nحالة الخدمة: متصلة. لم أؤكد رؤية الشاشة بعد؛ سيبدأ الاستئناف فقط إذا نجح التقاط لقطة جديدة.", "", BotnaAICompiler.model(this));
+        getSharedPreferences(BotnaAICompiler.PREFS, MODE_PRIVATE).edit()
+                .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK, goal)
+                .putString(BotnaAccessibilityService.PREF_PENDING_SMART_TASK_ID, id)
+                .putBoolean(BotnaAccessibilityService.PREF_PENDING_SMART_RESUME, true).apply();
         sendBroadcast(new Intent(BotnaAccessibilityService.ACTION_RESUME_SMART_TASK).setPackage(getPackageName()).putExtra("task", goal).putExtra("agentTaskId", id));
-        Toast.makeText(this, "تم إرسال طلب الاستئناف. سيعيد الوكيل قراءة الشاشة الحالية.", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "أُرسل طلب الاستئناف. سيُبلغك الوكيل بنجاح أو فشل لقطة الشاشة الفعلية.", Toast.LENGTH_LONG).show();
+        if (botId.equals(selectedBotId) && "chat".equals(section)) render();
     }
 
     private boolean accessibilityEnabled() {
