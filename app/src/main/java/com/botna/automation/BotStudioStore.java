@@ -32,12 +32,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.HashSet;
+import java.util.Comparator;
 
 public final class BotStudioStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "bot_studio_v1.db";
-    private static final int DB_VERSION = 3;
+    private static final int DB_VERSION = 4;
     private static final String PREFS = "bot_studio_preferences";
     private static final String SELECTED_BOT = "selected_bot_id";
     private static final String VISION_STREAM = "vision_stream_enabled";
@@ -84,6 +87,9 @@ public final class BotStudioStore extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE checkpoints(task_id TEXT PRIMARY KEY,goal TEXT NOT NULL,script_id TEXT NOT NULL,action_count INTEGER NOT NULL,history_json TEXT NOT NULL,state TEXT NOT NULL,updated_at INTEGER NOT NULL)");
         db.execSQL("CREATE INDEX checkpoints_state_time ON checkpoints(state,updated_at)");
         db.execSQL("CREATE TABLE custom_skills(id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL,guidance TEXT NOT NULL,created_at INTEGER NOT NULL)");
+        db.execSQL("CREATE TABLE task_events(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,bot_id TEXT NOT NULL,role TEXT NOT NULL,title TEXT NOT NULL,detail TEXT NOT NULL,action_index INTEGER NOT NULL,success INTEGER NOT NULL,created_at INTEGER NOT NULL)");
+        db.execSQL("CREATE INDEX task_events_bot_time ON task_events(bot_id,created_at)");
+        db.execSQL("CREATE INDEX task_events_task_time ON task_events(task_id,created_at)");
     }
 
     @Override public void onConfigure(SQLiteDatabase db) { super.onConfigure(db); db.setForeignKeyConstraintsEnabled(true); }
@@ -91,6 +97,11 @@ public final class BotStudioStore extends SQLiteOpenHelper {
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) db.execSQL("ALTER TABLE messages ADD COLUMN model_name TEXT NOT NULL DEFAULT ''");
         if (oldVersion < 3) db.execSQL("CREATE TABLE IF NOT EXISTS custom_skills(id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL,guidance TEXT NOT NULL,created_at INTEGER NOT NULL)");
+        if (oldVersion < 4) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS task_events(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,bot_id TEXT NOT NULL,role TEXT NOT NULL,title TEXT NOT NULL,detail TEXT NOT NULL,action_index INTEGER NOT NULL,success INTEGER NOT NULL,created_at INTEGER NOT NULL)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS task_events_bot_time ON task_events(bot_id,created_at)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS task_events_task_time ON task_events(task_id,created_at)");
+        }
     }
 
     public synchronized JSONArray bots() {
@@ -209,13 +220,18 @@ public final class BotStudioStore extends SQLiteOpenHelper {
         v.put("image_path", attachmentPath == null ? "" : attachmentPath); v.put("created_at", System.currentTimeMillis());
         v.put("model_name", modelName == null ? "" : modelName);
         getWritableDatabase().insert("messages", null, v);
-        getWritableDatabase().execSQL("DELETE FROM messages WHERE bot_id=? AND id NOT IN (SELECT id FROM messages WHERE bot_id=? ORDER BY created_at DESC LIMIT 300)", new Object[]{botId, botId});
+    }
+
+    public synchronized int messageCount(String botId) {
+        if (botId == null || botId.isEmpty()) return 0;
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM messages WHERE bot_id=?", new String[]{botId})) { return c.moveToFirst() ? c.getInt(0) : 0; }
+        catch (Exception ignored) { return 0; }
     }
 
     public synchronized JSONArray messages(String botId, int limit) {
         JSONArray out = new JSONArray();
         if (botId == null) return out;
-        try (Cursor c = getReadableDatabase().rawQuery("SELECT role,body,image_path,created_at,model_name FROM messages WHERE bot_id=? ORDER BY created_at DESC LIMIT ?", new String[]{botId, String.valueOf(Math.max(1, Math.min(300, limit)))})) {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT role,body,image_path,created_at,model_name FROM messages WHERE bot_id=? ORDER BY created_at DESC LIMIT ?", new String[]{botId, String.valueOf(Math.max(1, Math.min(10000, limit)))})) {
             while (c.moveToNext()) out.put(new JSONObject().put("role", c.getString(0)).put("body", c.getString(1)).put("image", c.getString(2)).put("time", c.getLong(3)).put("model", c.getString(4)));
         } catch (Exception ignored) { }
         JSONArray ordered = new JSONArray();
@@ -226,6 +242,141 @@ public final class BotStudioStore extends SQLiteOpenHelper {
     public static void associateTaskWithBot(Context context, String taskId, String botId) {
         if (context == null || taskId == null || taskId.isEmpty() || botId == null || botId.isEmpty()) return;
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("task_bot_" + taskId, botId).apply();
+        try { get(context).getWritableDatabase().execSQL("UPDATE task_events SET bot_id=? WHERE task_id=? AND (bot_id='' OR bot_id IS NULL)", new Object[]{botId, taskId}); }
+        catch (Exception ignored) { }
+    }
+
+    public synchronized void recordTaskEvent(String taskId, JSONObject event) {
+        if (taskId == null || taskId.isEmpty() || event == null) return;
+        String id = event.optString("id", "event_" + System.currentTimeMillis() + "_" + Math.abs((int) (System.nanoTime() % 1000000)));
+        String botId = botForTask(appContext, taskId);
+        ContentValues v = new ContentValues();
+        v.put("id", id); v.put("task_id", taskId); v.put("bot_id", botId == null ? "" : botId);
+        v.put("role", clean(event.optString("role", "system"), 24, "system"));
+        v.put("title", clean(event.optString("title", ""), 500, ""));
+        v.put("detail", clean(event.optString("detail", ""), 16000, ""));
+        v.put("action_index", event.optInt("actionIndex", -1)); v.put("success", event.optBoolean("success", false) ? 1 : 0);
+        v.put("created_at", event.optLong("time", System.currentTimeMillis()));
+        try { getWritableDatabase().insertWithOnConflict("task_events", null, v, SQLiteDatabase.CONFLICT_IGNORE); }
+        catch (Exception ignored) { }
+    }
+
+    public synchronized String contextForChat(String botId, String query, int maxChars) {
+        if (botId == null || botId.isEmpty()) return "";
+        ArrayList<JSONObject> all = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT rowid,role,body,image_path,created_at,model_name FROM messages WHERE bot_id=? ORDER BY created_at DESC", new String[]{botId})) {
+            while (c.moveToNext()) all.add(new JSONObject().put("key", "chat_" + c.getLong(0)).put("kind", "chat")
+                    .put("role", c.getString(1)).put("body", c.getString(2)).put("image", c.getString(3))
+                    .put("time", c.getLong(4)).put("model", c.getString(5)));
+        } catch (Exception ignored) { }
+        ArrayList<JSONObject> selected = new ArrayList<>();
+        HashSet<String> included = new HashSet<>();
+        int recentMessages = Math.min(24, all.size());
+        for (int i = 0; i < recentMessages; i++) { JSONObject o = all.get(i); selected.add(o); included.add(o.optString("key")); }
+        ArrayList<JSONObject> relevantMessages = new ArrayList<>();
+        for (int i = recentMessages; i < all.size(); i++) {
+            JSONObject o = all.get(i); int score = relevanceScore(query, o.optString("body") + " " + attachmentName(o.optString("image", "")));
+            if (score > 0) { try { o.put("score", score); } catch (Exception ignored) { } relevantMessages.add(o); }
+        }
+        relevantMessages.sort((a, b) -> {
+            int score = Integer.compare(b.optInt("score"), a.optInt("score"));
+            return score != 0 ? score : Long.compare(b.optLong("time"), a.optLong("time"));
+        });
+        for (int i = 0; i < Math.min(28, relevantMessages.size()); i++) { JSONObject o = relevantMessages.get(i); String key = o.optString("key"); if (included.add(key)) selected.add(o); }
+
+        ArrayList<JSONObject> events = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,task_id,role,title,detail,action_index,success,created_at FROM task_events WHERE bot_id=? ORDER BY created_at DESC", new String[]{botId})) {
+            while (c.moveToNext()) events.add(new JSONObject().put("key", "task_" + c.getString(0)).put("kind", "task")
+                    .put("taskId", c.getString(1)).put("role", c.getString(2)).put("title", c.getString(3)).put("detail", c.getString(4))
+                    .put("actionIndex", c.getInt(5)).put("success", c.getInt(6) != 0).put("time", c.getLong(7)));
+        } catch (Exception ignored) { }
+        int recentEvents = Math.min(28, events.size());
+        for (int i = 0; i < recentEvents; i++) { JSONObject o = events.get(i); String key = o.optString("key"); if (included.add(key)) selected.add(o); }
+        ArrayList<JSONObject> relevantEvents = new ArrayList<>();
+        for (int i = recentEvents; i < events.size(); i++) {
+            JSONObject o = events.get(i); int score = relevanceScore(query, o.optString("title") + " " + o.optString("detail"));
+            if (score > 0) { try { o.put("score", score); } catch (Exception ignored) { } relevantEvents.add(o); }
+        }
+        relevantEvents.sort((a, b) -> {
+            int score = Integer.compare(b.optInt("score"), a.optInt("score"));
+            return score != 0 ? score : Long.compare(b.optLong("time"), a.optLong("time"));
+        });
+        for (int i = 0; i < Math.min(32, relevantEvents.size()); i++) { JSONObject o = relevantEvents.get(i); String key = o.optString("key"); if (included.add(key)) selected.add(o); }
+
+        selected.sort(Comparator.comparingLong((JSONObject o) -> o.optLong("time")));
+        java.text.SimpleDateFormat dateFormat = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+        String header = "الوقت الحالي على الجهاز: " + dateFormat.format(new java.util.Date()) + ". لا تدّعِ رؤية الشاشة الحية من هذه المحادثة؛ حالة خدمة التحكم تُرفق منفصلة عند توفرها.\n"
+                + "هذا استرجاع من سجل المحادثة المحلي وسجل مهام الوكيل. تحتوي الرسائل القديمة والمهام المحفوظة على تاريخها؛ أجب اعتمادًا على السجلات التي تطابق سؤال المستخدم وميّز بين الأحداث القديمة والحالة الحالية.\n";
+        int maxContextChars = Math.max(4000, maxChars);
+        ArrayList<JSONObject> acceptedNewestFirst = new ArrayList<>();
+        int usedChars = header.length();
+        for (int i = selected.size() - 1; i >= 0; i--) {
+            JSONObject o = selected.get(i);
+            String body;
+            String role;
+            String attachment = o.optString("image", "");
+            if ("task".equals(o.optString("kind"))) {
+                role = "assistant".equals(o.optString("role")) ? "حدث الوكيل" : o.optString("role", "حدث");
+                body = "[المهمة " + o.optString("taskId") + " • " + o.optString("title") + "] " + o.optString("detail")
+                        + " [الإجراء=" + o.optInt("actionIndex", -1) + "، النجاح المسجل=" + o.optBoolean("success") + "]";
+                if (body.length() > 4200) body = body.substring(0, 4200) + " [اقتُطع سجل هذا الحدث في سياق الطلب؛ بقي الحدث الكامل محفوظًا محليًا].";
+            } else {
+                role = o.optString("role", "user"); body = o.optString("body", "");
+                String model = o.optString("model", "");
+                if (!model.isEmpty()) body += " [النموذج: " + model + "]";
+                if (!attachment.isEmpty()) body += " [مرفق سابق: " + attachmentName(attachment) + "]";
+                if (body.length() > 7000) body = body.substring(0, 7000) + " [اقتُطعت هذه الرسالة في سياق الطلب؛ النص الكامل محفوظ محليًا].";
+            }
+            long stamp = o.optLong("time");
+            String line = "\n[" + dateFormat.format(new java.util.Date(stamp)) + " • " + role + "] " + body + "\n";
+            if (usedChars + line.length() <= maxContextChars) {
+                acceptedNewestFirst.add(o);
+                usedChars += line.length();
+            }
+        }
+        Collections.reverse(acceptedNewestFirst);
+        StringBuilder out = new StringBuilder(header);
+        long previousTime = -1L;
+        for (JSONObject o : acceptedNewestFirst) {
+            String body;
+            String role;
+            String attachment = o.optString("image", "");
+            if ("task".equals(o.optString("kind"))) {
+                role = "assistant".equals(o.optString("role")) ? "حدث الوكيل" : o.optString("role", "حدث");
+                body = "[المهمة " + o.optString("taskId") + " • " + o.optString("title") + "] " + o.optString("detail");
+                if (body.length() > 4200) body = body.substring(0, 4200) + " [اقتُطع سجل الحدث في سياق الطلب].";
+                body += " [الإجراء=" + o.optInt("actionIndex", -1) + "، النجاح المسجل=" + o.optBoolean("success") + "]";
+            } else {
+                role = o.optString("role", "user"); body = o.optString("body", "");
+                String model = o.optString("model", "");
+                if (!model.isEmpty()) body += " [النموذج: " + model + "]";
+                if (!attachment.isEmpty()) body += " [مرفق سابق: " + attachmentName(attachment) + "]";
+                if (body.length() > 7000) body = body.substring(0, 7000) + " [اقتُطعت هذه الرسالة في سياق الطلب].";
+            }
+            long stamp = o.optLong("time");
+            if (previousTime > 0 && stamp > previousTime) {
+                long delta = stamp - previousTime;
+                if (delta >= 60_000L) out.append("[الفاصل منذ السجل المعروض السابق: ").append(delta / 60_000L).append(" دقيقة]\n");
+                else if (delta >= 1_000L) out.append("[الفاصل منذ السجل المعروض السابق: ").append(delta / 1_000L).append(" ثانية]\n");
+            }
+            out.append("\n[").append(dateFormat.format(new java.util.Date(stamp))).append(" • ").append(role).append("] ").append(body).append("\n");
+            previousTime = stamp;
+        }
+        return out.toString();
+    }
+
+    private static int relevanceScore(String query, String text) {
+        String normalizedQuery = normalize(query); String normalizedText = normalize(text);
+        if (normalizedQuery.isEmpty() || normalizedText.isEmpty()) return 0;
+        int score = 0;
+        if (normalizedText.contains(normalizedQuery) && normalizedQuery.length() >= 6) score += 8;
+        String[] words = normalizedQuery.split("\\s+");
+        HashSet<String> seen = new HashSet<>();
+        for (String word : words) {
+            if (word.length() < 3 || !seen.add(word)) continue;
+            if (normalizedText.contains(word)) score += 2;
+        }
+        return score;
     }
 
     public static String botForTask(Context context, String taskId) {
