@@ -147,6 +147,7 @@ public final class BotnaAgentStore {
         } catch (JSONException ignored) { }
         while (all.length() > MAX_MESSAGES) all.remove(0);
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(MESSAGES_KEY, all.toString()).apply();
+        try { BotStudioStore.get(context).recordTaskEvent(taskId, item); } catch (Exception ignored) { }
         JSONObject task = getTask(context, taskId);
         if (task != null) {
             try {
