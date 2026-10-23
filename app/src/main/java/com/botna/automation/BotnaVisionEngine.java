@@ -52,10 +52,20 @@ public final class BotnaVisionEngine {
     }
 
     public static String status(Context context) {
-        boolean yolo = context != null && BotStudioStore.yoloEnabled(context);
-        boolean ocr = context != null && BotStudioStore.ocrEnabled(context);
-        if (yolo || ocr) return "نموذج YOLO/OCR غير مضمّن في هذه النسخة؛ رجوع تلقائي إلى OpenCV وشجرة إمكانية الوصول والمزوّد الحالي.";
+        if (context == null) return lastStatus;
+        boolean stream = BotStudioStore.visionStreamEnabled(context);
+        boolean smart = BotStudioStore.smartSnapshotsEnabled(context);
+        if (!stream) return "المراقبة المتتابعة بالخلفية متوقفة؛ تبقى لقطات التحقق الضرورية أثناء المهام متاحة.";
+        if (!smart) return "المراقبة مفعّلة، لكن اللقطات الذكية عند تغير المحتوى متوقفة.";
         return lastStatus;
+    }
+
+    public static boolean shouldRecordActionSnapshot(Context context) {
+        return context != null && BotStudioStore.captureAfterActionEnabled(context);
+    }
+
+    public static boolean shouldCaptureFailureSnapshot(Context context) {
+        return context != null && BotStudioStore.captureOnFailureEnabled(context);
     }
 
     public static synchronized void resetComparison() { previousSample = null; }
