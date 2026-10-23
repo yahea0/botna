@@ -42,15 +42,29 @@ public final class BotnaWebTools {
         String[] direct = {
                 "سعر", "اسعار", "بيتكوين", "bitcoin", "btc", "ethereum", "اثيريوم", "سهم", "اسهم", "دولار", "شيكل", "يورو", "usd", "ils", "eur", "سعر الصرف", "تحويل عملة", "كم يساوي", "exchange rate",
                 "الان", "حاليا", "اليوم", "اخر الاخبار", "آخر الأخبار", "احدث", "اخر اصدار", "الاصدار الحالي", "هل ما زال", "هل لا يزال",
-                "ابحث على الانترنت", "ابحث عبر الانترنت", "ابحث بالانترنت", "ابحث في الويب", "مصادر حديثة", "مصدر رسمي", "تأكد من الانترنت",
-                "latest", "current", "right now", "today", "breaking news", "latest version", "web search", "search online", "look up"
+                "ابحث على الانترنت", "ابحث عبر الانترنت", "ابحث بالانترنت", "ابحث في الويب", "ابحث عن", "ابحثلي عن", "مصادر حديثة", "مصدر رسمي", "تأكد من الانترنت", "معلومات موثقة", "وثق الاجابة", "اريد مصادر", "اعطني مصادر", "ابحث في المصادر",
+                "latest", "current", "right now", "today", "breaking news", "latest version", "web search", "search online", "look up", "documentation", "official source", "verify online", "research", "reviews", "price", "market cap", "stock price"
         };
         for (String term : direct) if (s.contains(normalize(term))) return true;
         return false;
     }
 
     public static String currentTimeText() {
-        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault()).format(new Date());
+        Date now = new Date();
+        java.util.Calendar calendar = java.util.Calendar.getInstance();
+        calendar.setTime(now);
+        String period = calendar.get(java.util.Calendar.HOUR_OF_DAY) < 12 ? "صباحًا" : "مساءً";
+        return new SimpleDateFormat("yyyy-MM-dd hh:mm:ss", Locale.getDefault()).format(now) + " " + period
+                + " (" + java.util.TimeZone.getDefault().getID() + ")";
+    }
+
+    public static String capabilitiesDescription() {
+        return "أدوات Botna المتاحة فعليًا: (1) بحث ويب حي وقراءة مقتطفات مع روابط مصادر عبر searchContext عند طلب معلومة حديثة أو مصادر؛ "
+                + "(2) فتح رابط HTTP/HTTPS وقراءة النص/HTML/JSON إن سمح الموقع؛ (3) جلب أسعار بيتكوين أو أسعار صرف عند نجاح المصادر الخارجية المتاحة؛ "
+                + "(4) حساب رياضي آمن محليًا عند كتابة «احسب» أو calculate؛ (5) استخراج نص محلي من TXT/Markdown/JSON/CSV/XML وملفات الشيفرة وصيغ Office/ODT/EPUB وبعض الملفات النصية داخل ZIP/JAR/APK/AAB مع حدود حجم آمنة. "
+                + "لا يدّعي Botna قراءة محتوى كل ملف ثنائي؛ PDF قد يُرسل كمعاينة مرئية للنموذج إذا دعم الصور، وليس هناك استخراج نص كامل مضمون. "
+                + "للتحكم بالهاتف يجب أن تكون خدمة إمكانية الوصول متصلة وأن تنجح لقطة الشاشة الفعلية؛ في المحادثة العادية لا تُنفّذ أداة هاتف إلا عندما يُحوّل الطلب إلى مهمة أتمتة. "
+                + "لا تدّع تشغيل شيفرة عامة أو استخدام بيئة نظام كاملة ما لم توجد أداة منفذة ومخرجات فعلية.";
     }
 
     public static String searchContext(String userQuery) throws Exception {
@@ -135,7 +149,7 @@ public final class BotnaWebTools {
             URL url = new URL("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd%2Cils&include_24hr_change=true");
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("GET"); connection.setConnectTimeout(CONNECT_TIMEOUT_MS); connection.setReadTimeout(READ_TIMEOUT_MS);
-            connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "BotnaAndroid/0.23.5");
+            connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "BotnaAndroid/0.23.6");
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) return "";
             String body = readLimited(connection.getInputStream(), 100000);
@@ -267,10 +281,22 @@ public final class BotnaWebTools {
     public static String localToolContext(String query) {
         if (query == null || query.trim().isEmpty()) return "";
         String normalizedDigits = normalizeDigits(query);
-        Matcher match = Pattern.compile("(?is)(?:احسب(?:لي)?|احسب\\s+لي|calculate|calc|حل\\s+المعادلة)\\s*[:：]?\\s*([0-9\\s().,+\\-−*/×÷%^]+)").matcher(normalizedDigits);
-        if (!match.find()) return "";
-        String expression = match.group(1).trim().replace('×', '*').replace('÷', '/').replace('−', '-');
+        Matcher match = Pattern.compile("(?is)(?:احسب(?:لي)?|احسب\\s+لي|كم\\s+يساوي|ما\\s+ناتج|calculate|calc|what\\s+is|حل\\s+المعادلة)\\s*[:：]?\\s*([0-9\\s().,+\\-−*/×÷%^]+)").matcher(normalizedDigits);
+        boolean explicitCalculation = match.find();
+        String expression;
+        if (explicitCalculation) {
+            expression = match.group(1).trim();
+        } else {
+            String candidate = normalizedDigits.trim().replaceFirst("[?؟=]+$", "").trim();
+            if (candidate.length() > 128 || !candidate.matches("[0-9\\s().,+\\-−*/×÷%^]+")
+                    || !candidate.matches(".*[+*/×÷%^].*")
+                    && !candidate.matches(".*[0-9]\\s*[-−]\\s*[0-9].*")) return "";
+            expression = candidate;
+        }
+        expression = expression.trim().replace('×', '*').replace('÷', '/').replace('−', '-');
         if (expression.length() > 128) return "أداة الحساب المحلية: التعبير أطول من الحد الآمن؛ لم يتم حسابه.";
+        if (!explicitCalculation && !expression.matches(".*[+*/%^].*")
+                && !expression.matches(".*[0-9]\\s*-\\s*[0-9].*")) return "";
         try {
             ArithmeticParser parser = new ArithmeticParser(expression);
             double value = parser.parse();
@@ -364,7 +390,7 @@ public final class BotnaWebTools {
             URL url = new URL("https://api.frankfurter.dev/v1/latest?base=" + base + "&symbols=" + target);
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("GET"); connection.setConnectTimeout(CONNECT_TIMEOUT_MS); connection.setReadTimeout(READ_TIMEOUT_MS);
-            connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "BotnaAndroid/0.23.5");
+            connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "BotnaAndroid/0.23.6");
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) return "";
             JSONObject response = new JSONObject(readLimited(connection.getInputStream(), 100000));
