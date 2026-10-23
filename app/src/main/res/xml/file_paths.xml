@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="studio_attachments" path="bot_studio_files/" />
+    <files-path name="legacy_studio_images" path="bot_studio_images/" />
+</paths>
