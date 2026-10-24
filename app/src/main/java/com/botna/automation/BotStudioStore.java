@@ -44,6 +44,7 @@ public final class BotStudioStore extends SQLiteOpenHelper {
     private static final String PREFS = "bot_studio_preferences";
     private static final String SELECTED_BOT = "selected_bot_id";
     private static final String VISION_STREAM = "vision_stream_enabled";
+    private static final String VISION_LIVE = "vision_direct_live_enabled";
     private static final String VISION_SMART = "vision_smart_snapshots_enabled";
     private static final String VISION_CAPTURE_AFTER_ACTION = "vision_capture_after_action";
     private static final String VISION_CAPTURE_ON_FAILURE = "vision_capture_on_failure";
@@ -480,6 +481,8 @@ public final class BotStudioStore extends SQLiteOpenHelper {
     }
 
     public static boolean visionStreamEnabled(Context c) { return c.getSharedPreferences(PREFS, 0).getBoolean(VISION_STREAM, false); }
+    public static boolean directLiveVisionEnabled(Context c) { return c != null && c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(VISION_LIVE, false); }
+    public static void setDirectLiveVisionEnabled(Context c, boolean enabled) { if (c != null) c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(VISION_LIVE, enabled).apply(); }
     public static void setVisionStreamEnabled(Context c, boolean b) { c.getSharedPreferences(PREFS, 0).edit().putBoolean(VISION_STREAM, b).apply(); }
     public static boolean smartSnapshotsEnabled(Context c) { return c.getSharedPreferences(PREFS, 0).getBoolean(VISION_SMART, true); }
     public static void setSmartSnapshotsEnabled(Context c, boolean b) { c.getSharedPreferences(PREFS, 0).edit().putBoolean(VISION_SMART, b).apply(); }
