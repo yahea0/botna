@@ -10,8 +10,8 @@ android {
         applicationId 'com.botna.automation'
         minSdk 26
         targetSdk 35
-        versionCode 33
-        versionName '0.23.7'
+        versionCode 34
+        versionName '0.23.8'
     }
 
     compileOptions {
@@ -25,3 +25,4 @@ dependencies {
     implementation 'org.opencv:opencv:4.13.0'
     implementation 'androidx.core:core:1.15.0'
 }
+  
