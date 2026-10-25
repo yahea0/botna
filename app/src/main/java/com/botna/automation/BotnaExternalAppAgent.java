@@ -36,6 +36,10 @@ public final class BotnaExternalAppAgent {
         return context == null ? DEEPSEEK : context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SELECTED_PACKAGE, DEEPSEEK);
     }
 
+    public static boolean hasExplicitlySelectedPackage(Context context) {
+        return context != null && context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(SELECTED_PACKAGE);
+    }
+
     public static void setSelectedPackage(Context context, String packageName) {
         if (context == null || !isSupportedPackage(packageName)) return;
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(SELECTED_PACKAGE, packageName).apply();
@@ -102,41 +106,235 @@ public final class BotnaExternalAppAgent {
         String action = source.optString("action", source.optString("type", "")).trim().toUpperCase(Locale.ROOT);
         try {
             JSONObject out = new JSONObject();
-            if ("TAP".equals(action) || "CLICK".equals(action)) {
-                int x = integer(source, "x", -1); int y = integer(source, "y", -1);
-                if (x < 0 || y < 0 || x >= width || y >= height) return null;
-                out.put("action", "TAP"); out.put("type", "TAP_COORD");
-                out.put("xPercent", percent(x, width)); out.put("yPercent", percent(y, height));
+            if ("TAP".equals(action) || "CLICK".equals(action) || "TAP_AT".equals(action)) {
+                int x = integer(source, "x", -1);
+                int y = integer(source, "y", -1);
+                if (!inside(x, y, width, height)) return null;
+                out.put("action", "TAP");
+                out.put("type", "TAP_COORD");
+                out.put("xPercent", percent(x, width));
+                out.put("yPercent", percent(y, height));
                 out.put("label", "نقر بالإحداثيات " + x + "," + y);
                 out.put("reason", safe(source.optString("reason", "الإحداثيات ضمن أبعاد لقطة الشاشة الأصلية.")));
+                addAfterDelay(out, source, 350);
                 return out;
             }
-            if ("SWIPE".equals(action) || "SCROLL".equals(action)) {
-                int x1 = integer(source, "x1", -1), y1 = integer(source, "y1", -1);
-                int x2 = integer(source, "x2", -1), y2 = integer(source, "y2", -1);
+            if ("LONG_PRESS".equals(action) || "LONGPRESS".equals(action) || "PRESS_HOLD".equals(action)) {
+                int x = integer(source, "x", -1);
+                int y = integer(source, "y", -1);
+                if (!inside(x, y, width, height)) return null;
+                out.put("action", "LONG_PRESS");
+                out.put("type", "LONG_PRESS_COORD");
+                out.put("xPercent", percent(x, width));
+                out.put("yPercent", percent(y, height));
+                out.put("duration", Math.max(300, Math.min(5000, integer(source, "duration_ms", 850))));
+                out.put("label", "ضغط مطوّل عند " + x + "," + y);
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 350);
+                return out;
+            }
+            if ("SWIPE".equals(action) || "DRAG".equals(action)) {
+                int x1 = integer(source, "x1", -1);
+                int y1 = integer(source, "y1", -1);
+                int x2 = integer(source, "x2", -1);
+                int y2 = integer(source, "y2", -1);
                 if (!inside(x1, y1, width, height) || !inside(x2, y2, width, height)) return null;
-                out.put("action", "SWIPE"); out.put("type", "SWIPE");
-                out.put("x1", percent(x1, width)); out.put("y1", percent(y1, height));
-                out.put("x2", percent(x2, width)); out.put("y2", percent(y2, height));
-                out.put("duration", Math.max(120, Math.min(2500, integer(source, "duration_ms", 450))));
-                out.put("label", "سحب بالإحداثيات"); out.put("reason", safe(source.optString("reason", "")));
+                out.put("action", "SWIPE");
+                out.put("type", "SWIPE");
+                out.put("x1", percent(x1, width));
+                out.put("y1", percent(y1, height));
+                out.put("x2", percent(x2, width));
+                out.put("y2", percent(y2, height));
+                out.put("duration", Math.max(100, Math.min(5000, integer(source, "duration_ms", 450))));
+                out.put("label", "سحب بالإحداثيات");
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 450);
                 return out;
             }
-            if ("TYPE".equals(action) || "WRITE".equals(action)) {
+            if ("SCROLL".equals(action) || "SCROLL_SCREEN".equals(action)) {
+                String direction = source.optString("direction", "down").trim().toLowerCase(Locale.ROOT);
+                if (!("up".equals(direction) || "down".equals(direction) || "left".equals(direction) || "right".equals(direction))) return null;
+                out.put("action", "SCROLL");
+                out.put("type", "SCROLL");
+                out.put("direction", direction);
+                out.put("duration", Math.max(100, Math.min(5000, integer(source, "duration_ms", 450))));
+                out.put("label", "تمرير الشاشة " + direction);
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 450);
+                return out;
+            }
+            if ("TYPE".equals(action) || "WRITE".equals(action) || "TYPE_TEXT".equals(action) || "ENTER_TEXT".equals(action)) {
                 String text = source.optString("text", source.optString("value", ""));
                 if (text.isEmpty() || text.length() > 4000) return null;
-                out.put("action", "TYPE"); out.put("type", "TYPE_TEXT"); out.put("value", text);
-                out.put("label", "كتابة النص في الحقل المركّز"); out.put("reason", safe(source.optString("reason", "")));
+                out.put("action", "TYPE");
+                out.put("type", "TYPE_TEXT");
+                out.put("value", text);
+                out.put("label", "كتابة النص في الحقل المركّز");
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 250);
                 return out;
             }
-            if ("WAIT".equals(action)) {
+            if ("CLICK_TEXT".equals(action) || "TAP_TEXT".equals(action) || "TEXT_CLICK".equals(action)) {
+                String text = source.optString("text", source.optString("value", source.optString("label_text", ""))).trim();
+                if (text.isEmpty() || text.length() > 180) return null;
+                out.put("action", "CLICK_TEXT");
+                out.put("type", "TEXT_CLICK");
+                out.put("value", text);
+                out.put("label", "نقر على النص الظاهر: " + text);
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 350);
+                return out;
+            }
+            if ("WAIT".equals(action) || "SLEEP".equals(action) || "DELAY".equals(action)) {
                 int ms = integer(source, "ms", integer(source, "wait_ms", 1000));
-                out.put("action", "WAIT"); out.put("type", "WAIT"); out.put("delay", Math.max(250, Math.min(30000, ms)));
-                out.put("label", "انتظار ذكي"); out.put("reason", safe(source.optString("reason", "")));
+                out.put("action", "WAIT");
+                out.put("type", "WAIT");
+                out.put("delay", Math.max(250, Math.min(60000, ms)));
+                out.put("label", "انتظار " + Math.max(250, Math.min(60000, ms)) + " ms");
+                out.put("reason", safe(source.optString("reason", "")));
                 return out;
             }
             if ("BACK".equals(action) || "HOME".equals(action)) {
-                out.put("action", action); out.put("type", action); out.put("label", "HOME".equals(action) ? "الرئيسية" : "رجوع");
+                out.put("action", action);
+                out.put("type", action);
+                out.put("label", "HOME".equals(action) ? "الرئيسية" : "رجوع");
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 650);
+                return out;
+            }
+            if ("OPEN_APP".equals(action) || "LAUNCH_APP".equals(action) || "START_APP".equals(action) || "APP".equals(action)) {
+                String appName = source.optString("app_name", source.optString("appName", source.optString("package", source.optString("name", source.optString("value", ""))))).trim();
+                if (appName.isEmpty() || appName.length() > 180) return null;
+                out.put("action", "OPEN_APP");
+                out.put("type", "LAUNCH_APP");
+                out.put("appName", appName);
+                out.put("label", "فتح التطبيق: " + appName);
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 3500);
+                return out;
+            }
+            if ("OPEN_URL".equals(action) || "OPEN_LINK".equals(action) || "VISIT_URL".equals(action)) {
+                String url = source.optString("url", source.optString("value", "")).trim();
+                if (!(url.startsWith("https://") || url.startsWith("http://")) || url.length() > 2048) return null;
+                out.put("action", "OPEN_URL");
+                out.put("type", "OPEN_URL");
+                out.put("url", url);
+                out.put("label", "فتح الرابط: " + url);
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 2200);
+                return out;
+            }
+            if ("ENTER".equals(action) || "PRESS_ENTER".equals(action) || "SUBMIT".equals(action) || "SEARCH".equals(action)) {
+                out.put("action", "PRESS_ENTER");
+                out.put("type", "PRESS_ENTER");
+                out.put("label", "إرسال Enter أو بحث");
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 750);
+                return out;
+            }
+            if ("CLEAR_TEXT".equals(action) || "CLEAR_INPUT".equals(action) || "ERASE_FIELD".equals(action)) {
+                out.put("action", "CLEAR_TEXT");
+                out.put("type", "CLEAR_TEXT");
+                out.put("label", "مسح حقل الإدخال المركّز");
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 300);
+                return out;
+            }
+            if ("GLOBAL_ACTION".equals(action) || "SYSTEM_ACTION".equals(action)
+                    || "RECENTS".equals(action) || "RECENT_APPS".equals(action) || "APP_SWITCHER".equals(action)
+                    || "NOTIFICATIONS".equals(action) || "OPEN_NOTIFICATIONS".equals(action)
+                    || "OPEN_NOTIFICATION_SHADE".equals(action) || "NOTIFICATION_SHADE".equals(action)
+                    || "QUICK_SETTINGS".equals(action) || "OPEN_QUICK_SETTINGS".equals(action) || "QUICK_SETTINGS_PANEL".equals(action)
+                    || "DISMISS_NOTIFICATIONS".equals(action) || "DISMISS_NOTIFICATION_SHADE".equals(action)
+                    || "CLOSE_RECENTS".equals(action) || "CLOSE_RECENT_APPS".equals(action) || "OPEN_RECENTS".equals(action)) {
+                String systemAction = source.optString("system_action", source.optString("systemAction", source.optString("value", ""))).trim().toLowerCase(Locale.ROOT);
+                if ("RECENTS".equals(action) || "RECENT_APPS".equals(action) || "APP_SWITCHER".equals(action) || "OPEN_RECENTS".equals(action)) systemAction = "recent_apps";
+                else if ("NOTIFICATIONS".equals(action) || "OPEN_NOTIFICATIONS".equals(action) || "OPEN_NOTIFICATION_SHADE".equals(action) || "NOTIFICATION_SHADE".equals(action)) systemAction = "notifications";
+                else if ("QUICK_SETTINGS".equals(action) || "OPEN_QUICK_SETTINGS".equals(action) || "QUICK_SETTINGS_PANEL".equals(action)) systemAction = "quick_settings";
+                else if ("DISMISS_NOTIFICATIONS".equals(action) || "DISMISS_NOTIFICATION_SHADE".equals(action)) systemAction = "dismiss_notifications";
+                else if ("CLOSE_RECENTS".equals(action) || "CLOSE_RECENT_APPS".equals(action)) {
+                    out.put("action", "CLOSE_RECENTS");
+                    out.put("type", "CLOSE_RECENTS");
+                    out.put("label", "إغلاق التطبيقات الأخيرة");
+                    out.put("reason", safe(source.optString("reason", "")));
+                    return out;
+                }
+                if ("recent_apps".equals(systemAction) || "recents".equals(systemAction) || "recent".equals(systemAction)) systemAction = "recent_apps";
+                else if ("notifications".equals(systemAction) || "open_notifications".equals(systemAction) || "notification_shade".equals(systemAction) || "الإشعارات".equals(systemAction)) systemAction = "notifications";
+                else if ("quick_settings".equals(systemAction) || "open_quick_settings".equals(systemAction) || "quicksettings".equals(systemAction) || "settings".equals(systemAction) || "الإعدادات السريعة".equals(systemAction)) systemAction = "quick_settings";
+                else if ("dismiss_notifications".equals(systemAction) || "dismiss_notification_shade".equals(systemAction) || "dismiss".equals(systemAction) || "إغلاق الإشعارات".equals(systemAction)) systemAction = "dismiss_notifications";
+                else return null;
+                out.put("action", "GLOBAL_ACTION");
+                out.put("type", "GLOBAL_ACTION");
+                out.put("systemAction", systemAction);
+                out.put("label", "إجراء النظام: " + systemAction);
+                out.put("reason", safe(source.optString("reason", "")));
+                addAfterDelay(out, source, 900);
+                return out;
+            }
+            if ("WAIT_TEXT".equals(action) || "WAIT_FOR_TEXT".equals(action) || "WAIT_UNTIL_TEXT".equals(action)) {
+                String text = source.optString("text", source.optString("value", "")).trim();
+                if (text.isEmpty() || text.length() > 180) return null;
+                out.put("action", "WAIT_TEXT");
+                out.put("type", "WAIT_TEXT");
+                out.put("value", text);
+                out.put("attempts", Math.max(1, Math.min(240, integer(source, "attempts", 30))));
+                out.put("intervalMs", Math.max(250, Math.min(60000, integer(source, "interval_ms", 700))));
+                out.put("label", "انتظار ظهور النص: " + text);
+                out.put("reason", safe(source.optString("reason", "")));
+                return out;
+            }
+            if ("WAIT_INPUT".equals(action) || "WAIT_FOR_INPUT".equals(action) || "WAIT_FOR_FIELD".equals(action)) {
+                out.put("action", "WAIT_INPUT");
+                out.put("type", "WAIT_INPUT");
+                out.put("attempts", Math.max(1, Math.min(240, integer(source, "attempts", 30))));
+                out.put("intervalMs", Math.max(250, Math.min(60000, integer(source, "interval_ms", 700))));
+                out.put("label", "انتظار ظهور حقل إدخال");
+                out.put("reason", safe(source.optString("reason", "")));
+                return out;
+            }
+            if ("IMAGE_MATCH".equals(action) || "WAIT_IMAGE".equals(action) || "FIND_IMAGE".equals(action)) {
+                String image = source.optString("image_name", source.optString("image", source.optString("filename", source.optString("value", "")))).trim();
+                if (image.isEmpty() || image.contains("/") || image.contains("..") || image.length() > 180) return null;
+                out.put("action", "IMAGE_MATCH");
+                out.put("type", "IMAGE_MATCH");
+                out.put("images", new org.json.JSONArray().put(image));
+                out.put("threshold", Math.max(0, Math.min(100, integer(source, "threshold", 85))));
+                out.put("tapOnMatch", !("WAIT_IMAGE".equals(action) || source.optBoolean("wait_only", false)));
+                out.put("retries", Math.max(1, Math.min(100, integer(source, "retries", 2))));
+                out.put("retryDelay", Math.max(100, Math.min(10000, integer(source, "retry_delay_ms", 500))));
+                out.put("searchRegionMode", "full");
+                out.put("label", "مطابقة صورة محفوظة: " + image);
+                out.put("reason", safe(source.optString("reason", "")));
+                return out;
+            }
+            if ("CHECK_INTERNET".equals(action) || "WAIT_INTERNET".equals(action)) {
+                out.put("action", action);
+                out.put("type", action);
+                out.put("attempts", Math.max(1, Math.min(240, integer(source, "attempts", "WAIT_INTERNET".equals(action) ? 120 : 3))));
+                out.put("intervalMs", Math.max(250, Math.min(60000, integer(source, "interval_ms", 5000))));
+                out.put("timeoutMs", Math.max(1000, Math.min(12000, integer(source, "timeout_ms", 4000))));
+                String url = source.optString("url", "").trim();
+                if (!url.isEmpty()) out.put("url", url);
+                out.put("label", "WAIT_INTERNET".equals(action) ? "انتظار عودة الإنترنت" : "فحص اتصال الإنترنت");
+                out.put("reason", safe(source.optString("reason", "")));
+                return out;
+            }
+            if ("SPEED_TEST".equals(action) || "READ_SCREEN_TEXT".equals(action)) {
+                out.put("action", action);
+                out.put("type", action);
+                out.put("label", "SPEED_TEST".equals(action) ? "قياس سرعة الإنترنت" : "قراءة نصوص الشاشة");
+                out.put("reason", safe(source.optString("reason", "")));
+                return out;
+            }
+            if ("NOTIFY".equals(action) || "SHOW_NOTIFICATION".equals(action)) {
+                String message = source.optString("message", source.optString("text", "تم تنفيذ الأمر"));
+                if (message.trim().isEmpty() || message.length() > 500) return null;
+                out.put("action", "NOTIFY");
+                out.put("type", "NOTIFY");
+                out.put("message", message);
+                out.put("sound", source.optBoolean("sound", true));
+                out.put("label", "إظهار تنبيه للمستخدم");
                 out.put("reason", safe(source.optString("reason", "")));
                 return out;
             }
@@ -153,6 +351,11 @@ public final class BotnaExternalAppAgent {
             }
         } catch (JSONException ignored) { }
         return null;
+    }
+
+    private static void addAfterDelay(JSONObject output, JSONObject source, int fallback) throws JSONException {
+        int value = integer(source, "after_delay_ms", integer(source, "afterDelay", fallback));
+        output.put("afterDelay", Math.max(0, Math.min(60000, value)));
     }
 
     private static int integer(JSONObject json, String key, int fallback) {
