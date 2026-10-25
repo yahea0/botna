@@ -95,10 +95,42 @@ public final class BotnaExternalAppAgent {
         if (value.isEmpty()) return null;
         ArrayList<JSONObject> objects = extractObjects(value);
         for (int i = objects.size() - 1; i >= 0; i--) {
-            JSONObject parsed = convert(objects.get(i), imageWidth, imageHeight);
+            JSONObject source = objects.get(i);
+            JSONObject sequence = convertSequence(source, imageWidth, imageHeight);
+            if (sequence != null) return sequence;
+            JSONObject parsed = convert(source, imageWidth, imageHeight);
             if (parsed != null) return parsed;
         }
         return null;
+    }
+
+    private static JSONObject convertSequence(JSONObject source, int width, int height) {
+        if (source == null || width <= 0 || height <= 0) return null;
+        org.json.JSONArray input = source.optJSONArray("actions");
+        if (input == null) input = source.optJSONArray("steps");
+        if (input == null || input.length() < 1 || input.length() > 8) return null;
+        org.json.JSONArray normalized = new org.json.JSONArray();
+        try {
+            for (int i = 0; i < input.length(); i++) {
+                JSONObject item = input.optJSONObject(i);
+                if (item == null) return null;
+                JSONObject converted = convert(item, width, height);
+                if (converted == null) return null;
+                String kind = converted.optString("action", "").toUpperCase(Locale.ROOT);
+                if (input.length() > 1 && ("DONE".equals(kind) || "STOP".equals(kind) || "SEQUENCE".equals(kind))) return null;
+                normalized.put(converted);
+            }
+            if (normalized.length() == 1) return normalized.optJSONObject(0);
+            JSONObject out = new JSONObject();
+            out.put("action", "SEQUENCE");
+            out.put("type", "SEQUENCE");
+            out.put("steps", normalized);
+            out.put("reason", safe(source.optString("reason", "تنفيذ مجموعة إجراءات مترابطة بالترتيب.")));
+            out.put("label", "سلسلة من " + normalized.length() + " إجراءات");
+            return out;
+        } catch (JSONException e) {
+            return null;
+        }
     }
 
     private static JSONObject convert(JSONObject source, int width, int height) {
