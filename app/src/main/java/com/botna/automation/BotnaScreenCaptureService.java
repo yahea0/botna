@@ -8,6 +8,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.graphics.Bitmap;
+import android.graphics.PixelFormat;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -25,6 +29,7 @@ import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -32,6 +37,9 @@ import java.util.List;
 
 public final class BotnaScreenCaptureService extends Service {
     public static final String ACTION_START_CAPTURE = "com.botna.automation.SCREEN_CAPTURE_START";
+    public static final String ACTION_START_STILL_CAPTURE = "com.botna.automation.SCREEN_CAPTURE_START_STILLS";
+    public static final String ACTION_CAPTURE_STILL = "com.botna.automation.SCREEN_CAPTURE_STILL_REQUEST";
+    public static final String ACTION_CAPTURE_STILL_READY = "com.botna.automation.SCREEN_CAPTURE_STILL_READY";
     public static final String ACTION_REQUEST_CLIP = "com.botna.automation.SCREEN_CAPTURE_REQUEST_CLIP";
     public static final String ACTION_STOP_CAPTURE = "com.botna.automation.SCREEN_CAPTURE_STOP";
     public static final String ACTION_CAPTURE_READY = "com.botna.automation.SCREEN_CAPTURE_READY";
@@ -44,6 +52,9 @@ public final class BotnaScreenCaptureService extends Service {
     public static final String EXTRA_RESULT_DATA = "screen_capture_result_data";
     public static final String EXTRA_SUCCESS = "screen_capture_success";
     public static final String EXTRA_ERROR = "screen_capture_error";
+    public static final String EXTRA_CAPTURE_MODE = "screen_capture_mode";
+    public static final String CAPTURE_MODE_VIDEO = "video";
+    public static final String CAPTURE_MODE_STILLS = "stills";
 
     private static final String MIME = MediaFormat.MIMETYPE_VIDEO_AVC;
     private static final String CHANNEL_ID = "botna_screen_capture";
@@ -54,6 +65,12 @@ public final class BotnaScreenCaptureService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayDeque<EncodedSample> recentSamples = new ArrayDeque<>();
     private volatile boolean recording;
+    private volatile boolean stillCaptureMode;
+    private ImageReader stillImageReader;
+    private String pendingStillTaskId = "";
+    private String pendingStillRequestId = "";
+    private String pendingStillOutputPath = "";
+    private Runnable pendingStillTimeout;
     private volatile boolean requestSyncFrame;
     private volatile boolean readyBroadcastSent;
     private volatile boolean releasing;
@@ -74,20 +91,27 @@ public final class BotnaScreenCaptureService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null || intent.getAction() == null) return START_NOT_STICKY;
         String action = intent.getAction();
-        if (ACTION_START_CAPTURE.equals(action)) {
+        if (ACTION_START_CAPTURE.equals(action) || ACTION_START_STILL_CAPTURE.equals(action)) {
+            boolean requestedStillMode = ACTION_START_STILL_CAPTURE.equals(action);
             captureTaskId = safe(intent.getStringExtra(EXTRA_TASK_ID));
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
             Intent resultData = parcelableIntent(intent, EXTRA_RESULT_DATA);
             if (recording) {
-                sendReady(captureTaskId);
+                if (stillCaptureMode == requestedStillMode) sendReady(captureTaskId);
+                else notifyFailure(captureTaskId, "", "جلسة التقاط الشاشة الحالية تعمل بوضع مختلف.");
                 return START_NOT_STICKY;
             }
             try {
+                stillCaptureMode = requestedStillMode;
                 startForegroundNotification();
                 releasing = false;
                 recording = true;
                 readyBroadcastSent = false;
-                Thread thread = new Thread(() -> initializeAndRecord(resultCode, resultData), "BotnaScreenCapture");
+                String threadName = requestedStillMode ? "BotnaStillCapture" : "BotnaScreenCapture";
+                Thread thread = new Thread(() -> {
+                    if (requestedStillMode) initializeAndCaptureStills(resultCode, resultData);
+                    else initializeAndRecord(resultCode, resultData);
+                }, threadName);
                 recordingThread = thread;
                 thread.start();
             } catch (Exception e) {
@@ -95,6 +119,10 @@ public final class BotnaScreenCaptureService extends Service {
                 notifyFailure(captureTaskId, "", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
                 stopSelf();
             }
+            return START_NOT_STICKY;
+        }
+        if (ACTION_CAPTURE_STILL.equals(action)) {
+            requestStill(intent.getStringExtra(EXTRA_TASK_ID), intent.getStringExtra(EXTRA_REQUEST_ID), intent.getStringExtra(EXTRA_OUTPUT_PATH), 0);
             return START_NOT_STICKY;
         }
         if (ACTION_REQUEST_CLIP.equals(action)) {
@@ -112,7 +140,7 @@ public final class BotnaScreenCaptureService extends Service {
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Botna screen capture", NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("تسجيل الشاشة لفيديو التحليل القصير أثناء المهمة الآلية");
+            channel.setDescription("التقاط الشاشة لتحليل خطوات المهمة الآلية");
             channel.setShowBadge(false);
             manager.createNotificationChannel(channel);
         }
@@ -120,8 +148,8 @@ public final class BotnaScreenCaptureService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
         Notification notification = builder.setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle("Botna يسجل الشاشة")
-                .setContentText("تسجيل مستمر لتجهيز مقطع تحليل مدته ثانيتان")
+                .setContentTitle(stillCaptureMode ? "Botna يلتقط صور تحليل الشاشة" : "Botna يسجل الشاشة")
+                .setContentText(stillCaptureMode ? "تجهيز صور قبل الإجراء وأثناءه وبعده دون حفظ فيديو" : "تسجيل مستمر لتجهيز مقطع تحليل مدته ثانيتان")
                 .setOngoing(true)
                 .build();
         if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
@@ -181,6 +209,189 @@ public final class BotnaScreenCaptureService extends Service {
             releaseCaptureResources();
             stopSelf();
         }
+    }
+
+    private void initializeAndCaptureStills(int resultCode, Intent resultData) {
+        try {
+            Thread.sleep(250L);
+            if (!recording) return;
+            if (resultData == null || resultCode != android.app.Activity.RESULT_OK) throw new IllegalStateException("لم يتم منح إذن التقاط الشاشة.");
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            projection = manager.getMediaProjection(resultCode, resultData);
+            if (projection == null) throw new IllegalStateException("تعذر بدء جلسة التقاط الشاشة.");
+            DisplayMetrics metrics = new DisplayMetrics();
+            WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+            windowManager.getDefaultDisplay().getRealMetrics(metrics);
+            densityDpi = metrics.densityDpi;
+            videoWidth = Math.max(2, metrics.widthPixels);
+            videoHeight = Math.max(2, metrics.heightPixels);
+            stillImageReader = ImageReader.newInstance(videoWidth, videoHeight, PixelFormat.RGBA_8888, 2);
+            stillImageReader.setOnImageAvailableListener(this::updateLatestStillFrame, handler);
+            projection.registerCallback(new MediaProjection.Callback() {
+                @Override public void onStop() {
+                    if (releasing) return;
+                    recording = false;
+                    stopSelf();
+                }
+            }, handler);
+            virtualDisplay = projection.createVirtualDisplay("BotnaStillFrames", videoWidth, videoHeight, densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, stillImageReader.getSurface(), null, handler);
+            if (virtualDisplay == null) throw new IllegalStateException("تعذر بدء التقاط إطارات الشاشة.");
+            while (recording) Thread.sleep(100L);
+        } catch (Exception e) {
+            recording = false;
+            notifyFailure(captureTaskId, "", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        } finally {
+            releaseCaptureResources();
+            stopSelf();
+        }
+    }
+
+    private void updateLatestStillFrame(ImageReader reader) {
+        Image image = null;
+        Bitmap frame = null;
+        String taskId = "";
+        String requestId = "";
+        String outputPath = "";
+        try {
+            if (!recording || reader == null) return;
+            image = reader.acquireLatestImage();
+            if (image == null) return;
+            synchronized (lock) {
+                if (pendingStillRequestId.isEmpty()) return;
+                taskId = pendingStillTaskId;
+                requestId = pendingStillRequestId;
+                outputPath = pendingStillOutputPath;
+                clearPendingStillLocked();
+            }
+            Image.Plane[] planes = image.getPlanes();
+            if (planes == null || planes.length == 0) throw new IllegalStateException("تعذر قراءة بيانات إطار الشاشة.");
+            Image.Plane plane = planes[0];
+            ByteBuffer sourceBuffer = plane.getBuffer();
+            int pixelStride = plane.getPixelStride();
+            int rowStride = plane.getRowStride();
+            int width = image.getWidth();
+            int height = image.getHeight();
+            if (pixelStride < 4 || rowStride < pixelStride * width) throw new IllegalStateException("صيغة إطارات الشاشة غير مدعومة.");
+            byte[] source = new byte[sourceBuffer.remaining()];
+            sourceBuffer.get(source);
+            byte[] pixels = new byte[Math.multiplyExact(Math.multiplyExact(width, height), 4)];
+            for (int y = 0; y < height; y++) {
+                int sourceRow = y * rowStride;
+                int targetRow = y * width * 4;
+                for (int x = 0; x < width; x++) {
+                    int sourceOffset = sourceRow + x * pixelStride;
+                    int targetOffset = targetRow + x * 4;
+                    if (sourceOffset + 4 > source.length) throw new IllegalStateException("بيانات إطار الشاشة غير مكتملة.");
+                    System.arraycopy(source, sourceOffset, pixels, targetOffset, 4);
+                }
+            }
+            frame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            frame.copyPixelsFromBuffer(ByteBuffer.wrap(pixels));
+        } catch (Exception e) {
+            if (!requestId.isEmpty()) notifyFailure(taskId, requestId, e.getMessage() == null ? "تعذر تحويل إطار الشاشة إلى صورة." : e.getMessage());
+        } finally {
+            if (image != null) try { image.close(); } catch (Exception ignored) { }
+        }
+        if (frame != null) writeStillFrameAsync(taskId, requestId, outputPath, frame);
+    }
+
+    private void requestStill(String taskId, String requestId, String outputPath, int attempt) {
+        String requestedTask = safe(taskId);
+        String requestedId = safe(requestId);
+        if (!recording || !stillCaptureMode || stillImageReader == null) {
+            notifyFailure(requestedTask, requestedId, "جلسة التقاط الصور الثابتة ليست جاهزة.");
+            return;
+        }
+        File output;
+        try {
+            output = validateStillOutputPath(outputPath);
+        } catch (Exception e) {
+            notifyFailure(requestedTask, requestedId, e.getMessage() == null ? "مسار صورة الشاشة غير صالح." : e.getMessage());
+            return;
+        }
+        synchronized (lock) {
+            if (!pendingStillRequestId.isEmpty()) {
+                notifyFailure(requestedTask, requestedId, "يوجد طلب آخر لالتقاط صورة الشاشة قيد التنفيذ.");
+                return;
+            }
+            pendingStillTaskId = requestedTask;
+            pendingStillRequestId = requestedId;
+            pendingStillOutputPath = output.getAbsolutePath();
+            pendingStillTimeout = () -> {
+                String timedOutTask = "";
+                String timedOutRequest = "";
+                synchronized (lock) {
+                    if (!requestedId.equals(pendingStillRequestId)) return;
+                    timedOutTask = pendingStillTaskId;
+                    timedOutRequest = pendingStillRequestId;
+                    clearPendingStillLocked();
+                }
+                notifyFailure(timedOutTask, timedOutRequest, "انتهت مهلة انتظار إطار حديث من الشاشة.");
+            };
+            handler.postDelayed(pendingStillTimeout, 2500L);
+        }
+    }
+
+    private void clearPendingStillLocked() {
+        if (pendingStillTimeout != null) handler.removeCallbacks(pendingStillTimeout);
+        pendingStillTimeout = null;
+        pendingStillTaskId = "";
+        pendingStillRequestId = "";
+        pendingStillOutputPath = "";
+    }
+
+    private void writeStillFrameAsync(String taskId, String requestId, String outputPath, Bitmap frame) {
+        File output;
+        try {
+            output = validateStillOutputPath(outputPath);
+        } catch (Exception e) {
+            if (frame != null && !frame.isRecycled()) frame.recycle();
+            notifyFailure(taskId, requestId, e.getMessage() == null ? "مسار صورة الشاشة غير صالح." : e.getMessage());
+            return;
+        }
+        Thread writer = new Thread(() -> {
+            boolean success = false;
+            String error = "";
+            try {
+                File parent = output.getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IllegalStateException("تعذر إنشاء مجلد صور التحليل.");
+                try (FileOutputStream stream = new FileOutputStream(output)) {
+                    if (!frame.compress(Bitmap.CompressFormat.JPEG, 92, stream)) throw new IllegalStateException("تعذر ترميز صورة الشاشة.");
+                    stream.flush();
+                    stream.getFD().sync();
+                }
+                success = output.isFile() && output.length() > 0L;
+                if (!success) throw new IllegalStateException("ملف صورة الشاشة فارغ أو غير مكتمل.");
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                if (output.exists()) output.delete();
+            } finally {
+                if (!frame.isRecycled()) frame.recycle();
+            }
+            if (success) {
+                Intent result = new Intent(ACTION_CAPTURE_STILL_READY).setPackage(getPackageName());
+                result.putExtra(EXTRA_TASK_ID, taskId);
+                result.putExtra(EXTRA_REQUEST_ID, requestId);
+                result.putExtra(EXTRA_OUTPUT_PATH, output.getAbsolutePath());
+                result.putExtra(EXTRA_SUCCESS, true);
+                sendBroadcast(result);
+            } else {
+                notifyFailure(taskId, requestId, error.isEmpty() ? "تعذر حفظ صورة الشاشة." : error);
+            }
+        }, "BotnaWriteStillFrame");
+        writer.start();
+    }
+
+    private File validateStillOutputPath(String outputPath) throws Exception {
+        if (outputPath == null || outputPath.trim().isEmpty()) throw new IllegalArgumentException("لم يُحدد مسار صورة الشاشة.");
+        File directory = new File(new File(getFilesDir(), "bot_studio_files"), "ai_share").getCanonicalFile();
+        if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("تعذر إنشاء مجلد صور التحليل.");
+        File output = new File(outputPath).getCanonicalFile();
+        if (output.getParentFile() == null || !output.getParentFile().equals(directory) || !output.getName().endsWith(".jpg")) {
+            throw new IllegalArgumentException("مسار صورة الشاشة خارج مجلد المشاركة المسموح.");
+        }
+        return output;
     }
 
     private void drainEncoder() throws Exception {
@@ -252,7 +463,7 @@ public final class BotnaScreenCaptureService extends Service {
             return;
         }
         synchronized (lock) {
-            if (!recording || encoder == null || outputFormat == null || !readyBroadcastSent) {
+            if (!recording || stillCaptureMode || encoder == null || outputFormat == null || !readyBroadcastSent) {
                 notifyFailure(requestedTask, requestedId, "خدمة تسجيل الشاشة ليست جاهزة بعد.");
                 return;
             }
@@ -374,6 +585,17 @@ public final class BotnaScreenCaptureService extends Service {
         if (virtualDisplay != null) {
             try { virtualDisplay.release(); } catch (Exception ignored) { }
             virtualDisplay = null;
+        }
+        if (stillImageReader != null) {
+            try { stillImageReader.setOnImageAvailableListener(null, null); } catch (Exception ignored) { }
+            try { stillImageReader.close(); } catch (Exception ignored) { }
+            stillImageReader = null;
+        }
+        synchronized (lock) {
+            String taskId = pendingStillTaskId;
+            String requestId = pendingStillRequestId;
+            clearPendingStillLocked();
+            if (!requestId.isEmpty()) notifyFailure(taskId, requestId, "توقفت جلسة التقاط الشاشة قبل اكتمال الصورة.");
         }
         if (projection != null) {
             try { projection.stop(); } catch (Exception ignored) { }
