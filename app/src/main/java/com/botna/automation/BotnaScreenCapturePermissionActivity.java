@@ -9,12 +9,15 @@ import android.os.Bundle;
 public final class BotnaScreenCapturePermissionActivity extends Activity {
     private static final int REQUEST_CAPTURE_PERMISSION = 23615;
     private String taskId = "";
+    private String captureMode = BotnaScreenCaptureService.CAPTURE_MODE_VIDEO;
     private boolean requestStarted;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         taskId = getIntent() == null ? "" : getIntent().getStringExtra(BotnaScreenCaptureService.EXTRA_TASK_ID);
         if (taskId == null) taskId = "";
+        captureMode = getIntent() == null ? BotnaScreenCaptureService.CAPTURE_MODE_VIDEO : getIntent().getStringExtra(BotnaScreenCaptureService.EXTRA_CAPTURE_MODE);
+        if (!BotnaScreenCaptureService.CAPTURE_MODE_STILLS.equals(captureMode)) captureMode = BotnaScreenCaptureService.CAPTURE_MODE_VIDEO;
         if (state != null || requestStarted) {
             finish();
             return;
@@ -36,7 +39,7 @@ public final class BotnaScreenCapturePermissionActivity extends Activity {
             return;
         }
         if (resultCode != RESULT_OK || data == null) {
-            sendFailure("لم يتم منح إذن تسجيل الشاشة. فعّل خيار البث المباشر ووافق على نافذة نظام Android لبدء التسجيل.");
+            sendFailure("لم يتم منح إذن التقاط الشاشة؛ وافق على نافذة نظام Android ليتمكن Botna من تحليل الشاشة.");
             finish();
             return;
         }
@@ -45,7 +48,8 @@ public final class BotnaScreenCapturePermissionActivity extends Activity {
             return;
         }
         Intent service = new Intent(this, BotnaScreenCaptureService.class);
-        service.setAction(BotnaScreenCaptureService.ACTION_START_CAPTURE);
+        service.setAction(BotnaScreenCaptureService.CAPTURE_MODE_STILLS.equals(captureMode)
+                ? BotnaScreenCaptureService.ACTION_START_STILL_CAPTURE : BotnaScreenCaptureService.ACTION_START_CAPTURE);
         service.putExtra(BotnaScreenCaptureService.EXTRA_TASK_ID, taskId);
         service.putExtra(BotnaScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
         service.putExtra(BotnaScreenCaptureService.EXTRA_RESULT_DATA, data);
