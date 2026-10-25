@@ -146,6 +146,10 @@ public final class BotnaExternalAppAgent {
                 out.put("type", "TAP_COORD");
                 out.put("xPercent", percent(x, width));
                 out.put("yPercent", percent(y, height));
+                out.put("screenX", x);
+                out.put("screenY", y);
+                out.put("screenWidth", width);
+                out.put("screenHeight", height);
                 out.put("label", "نقر بالإحداثيات " + x + "," + y);
                 out.put("reason", safe(source.optString("reason", "الإحداثيات ضمن أبعاد لقطة الشاشة الأصلية.")));
                 addAfterDelay(out, source, 350);
@@ -159,6 +163,10 @@ public final class BotnaExternalAppAgent {
                 out.put("type", "LONG_PRESS_COORD");
                 out.put("xPercent", percent(x, width));
                 out.put("yPercent", percent(y, height));
+                out.put("screenX", x);
+                out.put("screenY", y);
+                out.put("screenWidth", width);
+                out.put("screenHeight", height);
                 out.put("duration", Math.max(300, Math.min(5000, integer(source, "duration_ms", 850))));
                 out.put("label", "ضغط مطوّل عند " + x + "," + y);
                 out.put("reason", safe(source.optString("reason", "")));
@@ -177,6 +185,12 @@ public final class BotnaExternalAppAgent {
                 out.put("y1", percent(y1, height));
                 out.put("x2", percent(x2, width));
                 out.put("y2", percent(y2, height));
+                out.put("screenX1", x1);
+                out.put("screenY1", y1);
+                out.put("screenX2", x2);
+                out.put("screenY2", y2);
+                out.put("screenWidth", width);
+                out.put("screenHeight", height);
                 out.put("duration", Math.max(100, Math.min(5000, integer(source, "duration_ms", 450))));
                 out.put("label", "سحب بالإحداثيات");
                 out.put("reason", safe(source.optString("reason", "")));
