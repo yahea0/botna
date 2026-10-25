@@ -90,25 +90,111 @@ public final class BotnaExternalAppAgent {
         catch (Exception ignored) { return false; }
     }
 
+    public static boolean canShareVideo(Context context, String packageName) {
+        if (context == null || !isSupportedPackage(packageName)) return false;
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setPackage(packageName);
+        intent.setType("video/mp4");
+        try { return !context.getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY).isEmpty(); }
+        catch (Exception ignored) { return false; }
+    }
+
+    public static boolean canShareMixedAttachments(Context context, String packageName) {
+        if (context == null || !isSupportedPackage(packageName)) return false;
+        Intent intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+        intent.setPackage(packageName);
+        intent.setType("*/*");
+        try { return !context.getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY).isEmpty(); }
+        catch (Exception ignored) { return false; }
+    }
+
     public static JSONObject parseAction(String raw, int imageWidth, int imageHeight) {
-        String value = raw == null ? "" : raw.trim();
-        if (value.isEmpty()) return null;
+        String value = stripCodeFence(raw);
+        if (value.isEmpty() || imageWidth <= 0 || imageHeight <= 0) return null;
+        ArrayList<String> roots = extractJsonRoots(value);
+        if (roots.size() == 1) {
+            String root = roots.get(0);
+            try {
+                if (root.charAt(0) == '[') {
+                    return convertSequence(new org.json.JSONArray(root), imageWidth, imageHeight, "تنفيذ الإجراءات المرتبة التي أعادها النموذج.");
+                }
+                if (root.charAt(0) == '{') {
+                    JSONObject source = new JSONObject(root);
+                    JSONObject sequence = convertSequence(source, imageWidth, imageHeight);
+                    if (sequence != null) return sequence;
+                    return convert(source, imageWidth, imageHeight);
+                }
+            } catch (Exception ignored) {
+                return null;
+            }
+        } else if (roots.size() > 1) {
+            ArrayList<JSONObject> rootActions = new ArrayList<>();
+            for (String root : roots) {
+                try {
+                    if (root.startsWith("[")) return null;
+                    JSONObject source = new JSONObject(root);
+                    JSONObject sequence = convertSequence(source, imageWidth, imageHeight);
+                    if (sequence != null) return null;
+                    boolean actionObject = source.has("action") || source.has("type");
+                    JSONObject parsed = convert(source, imageWidth, imageHeight);
+                    if (parsed != null) rootActions.add(parsed);
+                    else if (actionObject) return null;
+                } catch (Exception ignored) {
+                    return null;
+                }
+            }
+            if (rootActions.size() == 1) return rootActions.get(0);
+            if (rootActions.size() >= 2 && rootActions.size() <= 8) return wrapSequence(rootActions, "تنفيذ الإجراءات المرتبة المستخرجة من رد النموذج.");
+            return null;
+        }
         ArrayList<JSONObject> objects = extractObjects(value);
-        for (int i = objects.size() - 1; i >= 0; i--) {
-            JSONObject source = objects.get(i);
+        ArrayList<JSONObject> recoveredActions = new ArrayList<>();
+        boolean invalidActionObject = false;
+        for (JSONObject source : objects) {
             JSONObject sequence = convertSequence(source, imageWidth, imageHeight);
             if (sequence != null) return sequence;
+            boolean actionObject = source.has("action") || source.has("type");
             JSONObject parsed = convert(source, imageWidth, imageHeight);
-            if (parsed != null) return parsed;
+            if (parsed != null) recoveredActions.add(parsed);
+            else if (actionObject) invalidActionObject = true;
         }
-        return null;
+        if (invalidActionObject || recoveredActions.isEmpty() || recoveredActions.size() > 8) return null;
+        if (recoveredActions.size() == 1) return recoveredActions.get(0);
+        return wrapSequence(recoveredActions, "تنفيذ الإجراءات المرتبة المستخرجة من رد النموذج.");
+    }
+
+    public static JSONObject parseLatestAction(String raw, int imageWidth, int imageHeight) {
+        String value = stripCodeFence(raw);
+        if (value.isEmpty() || imageWidth <= 0 || imageHeight <= 0) return null;
+        ArrayList<String> roots = extractJsonRoots(value);
+        if (roots.isEmpty()) return null;
+        String root = roots.get(roots.size() - 1);
+        int rootStart = value.lastIndexOf(root);
+        int rootEnd = rootStart < 0 ? -1 : rootStart + root.length();
+        int lastActionMarker = Math.max(value.lastIndexOf("\"action\""), value.lastIndexOf("\"type\""));
+        if (rootEnd < 0 || lastActionMarker > rootEnd) return null;
+        try {
+            if (root.startsWith("[")) return convertSequence(new org.json.JSONArray(root), imageWidth, imageHeight, "تنفيذ الإجراءات المرتبة التي أعادها النموذج.");
+            JSONObject source = new JSONObject(root);
+            JSONObject sequence = convertSequence(source, imageWidth, imageHeight);
+            if (sequence != null) return sequence;
+            return convert(source, imageWidth, imageHeight);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static JSONObject convertSequence(JSONObject source, int width, int height) {
         if (source == null || width <= 0 || height <= 0) return null;
         org.json.JSONArray input = source.optJSONArray("actions");
         if (input == null) input = source.optJSONArray("steps");
-        if (input == null || input.length() < 1 || input.length() > 8) return null;
+        if (input == null) input = source.optJSONArray("commands");
+        if (input == null) return null;
+        return convertSequence(input, width, height, source.optString("reason", "تنفيذ الإجراءات المرتبة التي أعادها النموذج."));
+    }
+
+    private static JSONObject convertSequence(org.json.JSONArray input, int width, int height, String reason) {
+        if (input == null || width <= 0 || height <= 0 || input.length() < 1 || input.length() > 8) return null;
         org.json.JSONArray normalized = new org.json.JSONArray();
         try {
             for (int i = 0; i < input.length(); i++) {
@@ -125,12 +211,98 @@ public final class BotnaExternalAppAgent {
             out.put("action", "SEQUENCE");
             out.put("type", "SEQUENCE");
             out.put("steps", normalized);
-            out.put("reason", safe(source.optString("reason", "تنفيذ مجموعة إجراءات مترابطة بالترتيب.")));
+            out.put("reason", safe(reason));
             out.put("label", "سلسلة من " + normalized.length() + " إجراءات");
             return out;
         } catch (JSONException e) {
             return null;
         }
+    }
+
+    private static JSONObject wrapSequence(ArrayList<JSONObject> actions, String reason) {
+        if (actions == null || actions.size() < 2 || actions.size() > 8) return null;
+        try {
+            org.json.JSONArray normalized = new org.json.JSONArray();
+            for (JSONObject action : actions) {
+                if (action == null) return null;
+                String kind = action.optString("action", "").toUpperCase(Locale.ROOT);
+                if ("DONE".equals(kind) || "STOP".equals(kind) || "SEQUENCE".equals(kind)) return null;
+                normalized.put(new JSONObject(action.toString()));
+            }
+            JSONObject out = new JSONObject();
+            out.put("action", "SEQUENCE");
+            out.put("type", "SEQUENCE");
+            out.put("steps", normalized);
+            out.put("reason", safe(reason));
+            out.put("label", "سلسلة من " + normalized.length() + " إجراءات");
+            return out;
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    private static String stripCodeFence(String raw) {
+        if (raw == null) return "";
+        String value = raw.trim();
+        if (value.startsWith("```") ) {
+            int newline = value.indexOf('\n');
+            if (newline >= 0) value = value.substring(newline + 1);
+            int closing = value.lastIndexOf("```");
+            if (closing >= 0) value = value.substring(0, closing);
+        }
+        return value.trim();
+    }
+
+    private static ArrayList<String> extractJsonRoots(String value) {
+        ArrayList<String> roots = new ArrayList<>();
+        if (value == null || value.isEmpty()) return roots;
+        java.util.ArrayDeque<Character> stack = new java.util.ArrayDeque<>();
+        int start = -1;
+        boolean quoted = false;
+        boolean escaped = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (start < 0) {
+                if (c == '{' || c == '[') {
+                    start = i;
+                    stack.push(c);
+                    quoted = false;
+                    escaped = false;
+                }
+                continue;
+            }
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') quoted = false;
+                continue;
+            }
+            if (c == '"') {
+                quoted = true;
+            } else if (c == '{' || c == '[') {
+                stack.push(c);
+            } else if (c == '}' || c == ']') {
+                if (stack.isEmpty()) {
+                    start = -1;
+                    continue;
+                }
+                char open = stack.pop();
+                if ((open == '{' && c != '}') || (open == '[' && c != ']')) {
+                    stack.clear();
+                    start = -1;
+                    quoted = false;
+                    escaped = false;
+                    continue;
+                }
+                if (stack.isEmpty()) {
+                    roots.add(value.substring(start, i + 1).trim());
+                    start = -1;
+                    quoted = false;
+                    escaped = false;
+                }
+            }
+        }
+        return roots;
     }
 
     private static JSONObject convert(JSONObject source, int width, int height) {
@@ -139,8 +311,8 @@ public final class BotnaExternalAppAgent {
         try {
             JSONObject out = new JSONObject();
             if ("TAP".equals(action) || "CLICK".equals(action) || "TAP_AT".equals(action)) {
-                int x = integer(source, "x", -1);
-                int y = integer(source, "y", -1);
+                int x = integerAny(source, -1, "x", "tap_x", "tapX", "screen_x");
+                int y = integerAny(source, -1, "y", "tap_y", "tapY", "screen_y");
                 if (!inside(x, y, width, height)) return null;
                 out.put("action", "TAP");
                 out.put("type", "TAP_COORD");
@@ -156,8 +328,8 @@ public final class BotnaExternalAppAgent {
                 return out;
             }
             if ("LONG_PRESS".equals(action) || "LONGPRESS".equals(action) || "PRESS_HOLD".equals(action)) {
-                int x = integer(source, "x", -1);
-                int y = integer(source, "y", -1);
+                int x = integerAny(source, -1, "x", "tap_x", "tapX", "screen_x");
+                int y = integerAny(source, -1, "y", "tap_y", "tapY", "screen_y");
                 if (!inside(x, y, width, height)) return null;
                 out.put("action", "LONG_PRESS");
                 out.put("type", "LONG_PRESS_COORD");
@@ -174,10 +346,10 @@ public final class BotnaExternalAppAgent {
                 return out;
             }
             if ("SWIPE".equals(action) || "DRAG".equals(action)) {
-                int x1 = integer(source, "x1", -1);
-                int y1 = integer(source, "y1", -1);
-                int x2 = integer(source, "x2", -1);
-                int y2 = integer(source, "y2", -1);
+                int x1 = integerAny(source, -1, "x1", "start_x", "startX", "from_x", "fromX", "x_start");
+                int y1 = integerAny(source, -1, "y1", "start_y", "startY", "from_y", "fromY", "y_start");
+                int x2 = integerAny(source, -1, "x2", "end_x", "endX", "to_x", "toX", "x_end");
+                int y2 = integerAny(source, -1, "y2", "end_y", "endY", "to_y", "toY", "y_end");
                 if (!inside(x1, y1, width, height) || !inside(x2, y2, width, height)) return null;
                 out.put("action", "SWIPE");
                 out.put("type", "SWIPE");
@@ -191,7 +363,7 @@ public final class BotnaExternalAppAgent {
                 out.put("screenY2", y2);
                 out.put("screenWidth", width);
                 out.put("screenHeight", height);
-                out.put("duration", Math.max(100, Math.min(5000, integer(source, "duration_ms", 450))));
+                out.put("duration", Math.max(100, Math.min(5000, integerAny(source, 450, "duration_ms", "duration", "durationMs", "duration_millis"))));
                 out.put("label", "سحب بالإحداثيات");
                 out.put("reason", safe(source.optString("reason", "")));
                 addAfterDelay(out, source, 450);
@@ -402,6 +574,20 @@ public final class BotnaExternalAppAgent {
     private static void addAfterDelay(JSONObject output, JSONObject source, int fallback) throws JSONException {
         int value = integer(source, "after_delay_ms", integer(source, "afterDelay", fallback));
         output.put("afterDelay", Math.max(0, Math.min(60000, value)));
+    }
+
+    private static int integerAny(JSONObject json, int fallback, String... keys) {
+        if (json == null || keys == null) return fallback;
+        for (String key : keys) {
+            if (key == null || !json.has(key)) continue;
+            Object value = json.opt(key);
+            if (value instanceof Number) return ((Number) value).intValue();
+            if (value instanceof String) {
+                try { return (int) Math.round(Double.parseDouble(((String) value).trim())); }
+                catch (Exception ignored) { }
+            }
+        }
+        return fallback;
     }
 
     private static int integer(JSONObject json, String key, int fallback) {
