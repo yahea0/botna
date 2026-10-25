@@ -10,8 +10,8 @@ android {
         applicationId 'com.botna.automation'
         minSdk 26
         targetSdk 35
-        versionCode 40
-        versionName '0.23.14'
+        versionCode 42
+        versionName '0.23.16'
     }
 
     compileOptions {
