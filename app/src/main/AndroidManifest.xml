@@ -6,6 +6,7 @@
         <package android:name="com.openai.chatgpt" />
         <package android:name="com.google.android.apps.bard" />
         <package android:name="com.microsoft.copilot" />
+        <package android:name="com.whatsapp" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
