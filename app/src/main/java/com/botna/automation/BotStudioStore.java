@@ -507,7 +507,7 @@ public final class BotStudioStore extends SQLiteOpenHelper {
 
     public static boolean requiresManualApproval(JSONObject step) {
         if (step == null) return false;
-        String value = normalize(step.optString("label", "") + " " + step.optString("value", "") + " " + step.optString("message", ""));
+        String value = normalize(step.optString("label", "") + " " + step.optString("value", "") + " " + step.optString("message", "") + " " + step.optString("reason", ""));
         String[] markers = {"شراء", "اشتري", "اشتر", "ادفع", "دفع", "تحويل مالي", "تحويل", "حواله", "صفقه", "تنفيذ الطلب", "تاكيد الطلب", "احذف", "حذف", "مسح الملفات", "مسح البيانات", "اعاده ضبط المصنع", "ارسال رساله", "ارسل الرساله", "ارسال بريد", "ارسال", "نشر", "منشور عام", "publish", "delete", "clear data", "factory reset", "payment", "pay", "transfer", "place order", "purchase", "buy", "send message", "send email", "public post"};
         for (String marker : markers) if (value.contains(normalize(marker))) return true;
         return false;
