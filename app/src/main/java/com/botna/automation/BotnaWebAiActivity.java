@@ -1,6 +1,7 @@
 package com.botna.automation;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -217,7 +218,7 @@ public final class BotnaWebAiActivity extends Activity {
                 "const score=e=>{const r=e.getBoundingClientRect(),t=((e.getAttribute('placeholder')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('name')||'')).toLowerCase();return r.bottom*2+r.width*0.05+(document.activeElement===e?600:0)+(/message|prompt|ask|اسأل|رسالة|اكتب/.test(t)?900:0)-(/search|بحث|email|password/.test(t)?4000:0)};ed.sort((a,b)=>score(a)-score(b));" +
                 "const fs=[...document.querySelectorAll('input[type=file]')];const txt=(document.body&&document.body.innerText)||'';" +
                 "const btns=[...document.querySelectorAll('button,[role=button]')].filter(vis);const labels=btns.map(e=>((e.innerText||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')).trim()).join('\\n');" +
-                "const assistants=[...document.querySelectorAll('[data-message-author-role=assistant],[data-author=assistant],[data-testid*=assistant],article,[role=article],.prose,.markdown')].filter(vis).map(e=>(e.innerText||e.textContent||'').trim()).filter(t=>t.length>10&&!t.includes(" + JSONObject.quote(prompt.substring(0, Math.min(70, prompt.length))) + "));" +
+                "const assistants=[...document.querySelectorAll('[data-message-author-role=assistant],[data-author=assistant],[data-testid*=assistant],article,[role=article],.prose,.markdown')].filter(vis).map(e=>(e.innerText||e.textContent||'').trim()).filter(t=>t.length>10&&!t.includes(" + JSONObject.quote(prompt.substring(0, Math.min(70, prompt.length()))) + "));" +
                 "const stop=/(stop generating|stop response|cancel response|إيقاف التوليد|إيقاف الرد|generating|جارٍ التفكير|جاري التفكير)/i.test(labels)||!!document.querySelector('[aria-busy=true],progress,[role=progressbar]');" +
                 "return JSON.stringify({composer:ed.length>0,fileInputs:fs.length,body:txt.slice(-28000),response:assistants.length?assistants[assistants.length-1].slice(-16000):'',uploading:/(uploading|processing attachment|جارٍ الرفع|جاري الرفع|تحميل الصورة)/i.test(txt),generating:stop,buttons:labels.slice(-3000)});" +
                 "}catch(e){return JSON.stringify({error:String(e)})}})()";
