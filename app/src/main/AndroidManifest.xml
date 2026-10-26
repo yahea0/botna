@@ -63,6 +63,11 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".BotnaAiTemplateSettingsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".BotnaScreenCapturePermissionActivity"
             android:excludeFromRecents="true"
             android:exported="false"
