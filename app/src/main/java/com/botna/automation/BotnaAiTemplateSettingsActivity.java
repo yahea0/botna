@@ -5,6 +5,9 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -13,6 +16,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -30,6 +34,10 @@ public final class BotnaAiTemplateSettingsActivity extends Activity {
     private String pendingRole = "";
     private TextView composerStatus;
     private TextView sendStatus;
+    private ImageView composerPreview;
+    private ImageView sendPreview;
+    private Button composerButton;
+    private Button sendButton;
     private EditText thresholdInput;
     private EditText responseWaitInput;
 
@@ -37,48 +45,102 @@ public final class BotnaAiTemplateSettingsActivity extends Activity {
         super.onCreate(state);
         String requested = getIntent() == null ? "" : getIntent().getStringExtra(EXTRA_PACKAGE);
         if (BotnaExternalAppAgent.isSupportedPackage(requested)) packageName = requested;
+        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                | android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         buildUi();
     }
 
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setClipToPadding(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setFocusable(false);
+        scroll.setFocusableInTouchMode(false);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(18), dp(18), dp(18));
+        root.setPadding(dp(16), dp(16), dp(16), dp(20));
         root.setBackgroundColor(Color.rgb(13, 22, 35));
+        root.setFocusable(true);
+        root.setFocusableInTouchMode(true);
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = text("صور الحقل وزر الإرسال — " + BotnaExternalAppAgent.label(packageName), 20, Color.WHITE, true);
-        root.addView(title, params(-1, -2, 0, 0, 0, dp(10)));
-        TextView guidance = text("اختر قصاصة صغيرة وواضحة من لقطة الشاشة لكل عنصر. صورة حقل الإدخال تحدد مكان النقر قبل لصق التعليمات، وصورة زر الإرسال يجب أن تمثل الزر عندما يصبح جاهزًا للإرسال. البحث يجري على كامل الشاشة مع تكرار المحاولة.", 14, 0xFFB8C7D8, false);
-        root.addView(guidance, params(-1, -2, 0, 0, 0, dp(16)));
+        title.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        root.addView(title, params(-1, -2, 0, 0, 0, dp(8)));
+        TextView guidance = text("اختر قصاصة صغيرة وواضحة من لقطة الشاشة لكل عنصر. صورة حقل الإدخال تحدد مكان النقر قبل لصق التعليمات، وصورة زر الإرسال تحدد مكان النقر عندما يصبح جاهزًا. يمكنك معاينة الصورة الحالية واستبدالها في أي وقت.", 14, 0xFFB8C7D8, false);
+        root.addView(guidance, params(-1, -2, 0, 0, 0, dp(14)));
 
-        composerStatus = text("صورة حقل الإدخال: " + statusFor(BotnaExternalAppAgent.TEMPLATE_COMPOSER), 14, Color.WHITE, false);
-        root.addView(composerStatus, params(-1, -2, 0, 0, 0, dp(6)));
-        Button composerButton = button("اختيار صورة حقل الإدخال");
-        composerButton.setOnClickListener(v -> openImagePicker(BotnaExternalAppAgent.TEMPLATE_COMPOSER));
-        root.addView(composerButton, params(-1, dp(48), 0, 0, 0, dp(12)));
+        addTemplateSection(root, true);
+        addTemplateSection(root, false);
 
-        sendStatus = text("صورة زر الإرسال: " + statusFor(BotnaExternalAppAgent.TEMPLATE_SEND), 14, Color.WHITE, false);
-        root.addView(sendStatus, params(-1, -2, 0, 0, 0, dp(6)));
-        Button sendButton = button("اختيار صورة زر الإرسال");
-        sendButton.setOnClickListener(v -> openImagePicker(BotnaExternalAppAgent.TEMPLATE_SEND));
-        root.addView(sendButton, params(-1, dp(48), 0, 0, 0, dp(18)));
+        LinearLayout settingsCard = new LinearLayout(this);
+        settingsCard.setOrientation(LinearLayout.VERTICAL);
+        settingsCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        settingsCard.setBackground(panelBackground());
+        root.addView(settingsCard, params(-1, -2, 0, dp(2), 0, dp(12)));
 
+        TextView thresholdLabel = text("دقة التشابه المطلوبة (50–100%)", 15, Color.WHITE, true);
+        thresholdLabel.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        settingsCard.addView(thresholdLabel, params(-1, -2, 0, 0, 0, dp(5)));
         thresholdInput = numberField(String.valueOf(BotnaExternalAppAgent.visualThreshold(this, packageName)), "85");
-        root.addView(text("دقة التشابه المطلوبة (50–100%)", 14, Color.WHITE, true), params(-1, -2, 0, 0, 0, dp(5)));
-        root.addView(thresholdInput, params(-1, dp(52), 0, 0, 0, dp(14)));
+        settingsCard.addView(thresholdInput, params(-1, dp(50), 0, 0, 0, dp(12)));
 
+        TextView responseLabel = text("الانتظار قبل قراءة رد النموذج (ثانية)", 15, Color.WHITE, true);
+        responseLabel.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        settingsCard.addView(responseLabel, params(-1, -2, 0, 0, 0, dp(5)));
         responseWaitInput = numberField(String.valueOf(BotnaExternalAppAgent.responseWaitMs(this, packageName) / 1000), "15");
-        root.addView(text("الانتظار قبل قراءة رد النموذج (ثانية)", 14, Color.WHITE, true), params(-1, -2, 0, 0, 0, dp(5)));
-        root.addView(responseWaitInput, params(-1, dp(52), 0, 0, 0, dp(18)));
+        settingsCard.addView(responseWaitInput, params(-1, dp(50), 0, 0, 0, 0));
 
-        TextView footer = text("لا تستخدم صورة شاشة كاملة كقالب إذا أمكن قص العنصر نفسه؛ القالب الصغير يقلل اختلافات الواجهة. ستبقى هذه الإعدادات خاصة بالنموذج المختار.", 12, 0xFF9FB0C4, false);
-        root.addView(footer, params(-1, -2, 0, 0, 0, dp(18)));
+        TextView footer = text("تظهر معاينة كل صورة بعد حفظها. اضغط زر الاختيار مرة أخرى لاستبدالها. تبقى الصور والإعدادات خاصة بالنموذج المختار.", 12, 0xFF9FB0C4, false);
+        root.addView(footer, params(-1, -2, 0, 0, 0, dp(12)));
         Button save = button("حفظ الإعدادات والعودة");
         save.setOnClickListener(v -> saveAndFinish());
-        root.addView(save, params(-1, dp(52), 0, 0, 0, 0));
+        root.addView(save, params(-1, dp(48), 0, 0, 0, dp(2)));
+
         setContentView(scroll);
+        refreshStatuses();
+        root.requestFocus();
+    }
+
+    private void addTemplateSection(LinearLayout root, boolean composer) {
+        String role = composer ? BotnaExternalAppAgent.TEMPLATE_COMPOSER : BotnaExternalAppAgent.TEMPLATE_SEND;
+        LinearLayout section = new LinearLayout(this);
+        section.setOrientation(LinearLayout.VERTICAL);
+        section.setPadding(dp(12), dp(10), dp(12), dp(12));
+        section.setBackground(panelBackground());
+        root.addView(section, params(-1, -2, 0, 0, 0, dp(12)));
+
+        TextView title = text(composer ? "صورة حقل الإدخال" : "صورة زر الإرسال", 15, Color.WHITE, true);
+        title.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        section.addView(title, params(-1, -2, 0, 0, 0, dp(4)));
+
+        TextView status = text("", 12, 0xFFB8C7D8, false);
+        status.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        section.addView(status, params(-1, -2, 0, 0, 0, dp(6)));
+
+        ImageView preview = new ImageView(this);
+        preview.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        preview.setAdjustViewBounds(false);
+        preview.setPadding(dp(5), dp(5), dp(5), dp(5));
+        preview.setBackground(roundShape(0xFF0B1522, 0xFF29485C, 1, 10));
+        preview.setVisibility(View.GONE);
+        section.addView(preview, params(-1, dp(92), 0, 0, 0, dp(8)));
+
+        Button choose = button("اختيار صورة " + (composer ? "حقل الإدخال" : "زر الإرسال"));
+        choose.setOnClickListener(v -> openImagePicker(role));
+        section.addView(choose, params(-1, dp(44), 0, 0, 0, 0));
+
+        if (composer) {
+            composerStatus = status;
+            composerPreview = preview;
+            composerButton = choose;
+        } else {
+            sendStatus = status;
+            sendPreview = preview;
+            sendButton = choose;
+        }
     }
 
     private void openImagePicker(String role) {
@@ -161,8 +223,46 @@ public final class BotnaAiTemplateSettingsActivity extends Activity {
     }
 
     private void refreshStatuses() {
-        composerStatus.setText("صورة حقل الإدخال: " + statusFor(BotnaExternalAppAgent.TEMPLATE_COMPOSER));
-        sendStatus.setText("صورة زر الإرسال: " + statusFor(BotnaExternalAppAgent.TEMPLATE_SEND));
+        File composerFile = BotnaExternalAppAgent.visualTemplateFile(this, packageName, BotnaExternalAppAgent.TEMPLATE_COMPOSER);
+        File sendFile = BotnaExternalAppAgent.visualTemplateFile(this, packageName, BotnaExternalAppAgent.TEMPLATE_SEND);
+        boolean hasComposer = composerFile != null && composerFile.isFile() && composerFile.length() > 0;
+        boolean hasSend = sendFile != null && sendFile.isFile() && sendFile.length() > 0;
+        if (composerStatus != null) composerStatus.setText(hasComposer ? "الصورة محفوظة — اضغط لتغييرها" : "لم تُختر صورة بعد");
+        if (sendStatus != null) sendStatus.setText(hasSend ? "الصورة محفوظة — اضغط لتغييرها" : "لم تُختر صورة بعد");
+        if (composerButton != null) composerButton.setText(hasComposer ? "تغيير صورة حقل الإدخال" : "اختيار صورة حقل الإدخال");
+        if (sendButton != null) sendButton.setText(hasSend ? "تغيير صورة زر الإرسال" : "اختيار صورة زر الإرسال");
+        loadPreview(composerPreview, composerFile);
+        loadPreview(sendPreview, sendFile);
+    }
+
+    private void loadPreview(ImageView target, File file) {
+        if (target == null) return;
+        if (file == null || !file.isFile() || file.length() <= 0) {
+            target.setImageDrawable(null);
+            target.setVisibility(View.GONE);
+            return;
+        }
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            target.setImageDrawable(null);
+            target.setVisibility(View.GONE);
+            return;
+        }
+        int sample = 1;
+        while (bounds.outWidth / sample > 720 || bounds.outHeight / sample > 240) sample *= 2;
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        if (bitmap == null) {
+            target.setImageDrawable(null);
+            target.setVisibility(View.GONE);
+            return;
+        }
+        target.setImageBitmap(bitmap);
+        target.setContentDescription("معاينة الصورة المرجعية المحفوظة");
+        target.setVisibility(View.VISIBLE);
     }
 
     private EditText numberField(String value, String hint) {
@@ -185,8 +285,26 @@ public final class BotnaAiTemplateSettingsActivity extends Activity {
         button.setText(value);
         button.setAllCaps(false);
         button.setTextColor(Color.WHITE);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF126E8A));
+        button.setTextSize(15);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setMinHeight(dp(44));
+        button.setMinimumHeight(dp(44));
+        button.setStateListAnimator(null);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x5535E2F4), roundShape(0xFF126E8A, 0xFF35CFE4, 1, 10), null));
         return button;
+    }
+
+    private GradientDrawable roundShape(int fill, int stroke, int strokeWidth, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(fill);
+        drawable.setCornerRadius(dp(radius));
+        if (strokeWidth > 0) drawable.setStroke(dp(strokeWidth), stroke);
+        return drawable;
+    }
+
+    private GradientDrawable panelBackground() {
+        return roundShape(0xFF101D2B, 0xFF29485C, 1, 12);
     }
 
     private TextView text(String value, int size, int color, boolean bold) {
